@@ -1,0 +1,20 @@
+From: Professor <professor@example.edu>
+To: alice@localhost
+Subject: Lab 3 rubric
+Message-ID: <lab3@example.edu>
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="b1"
+
+--b1
+Content-Type: text/plain; charset=utf-8
+
+Hello, the rubric for lab 3 is attached.
+
+--b1
+Content-Type: text/plain; charset=utf-8; name="rubric.txt"
+Content-Disposition: attachment; filename="rubric.txt"
+Content-Transfer-Encoding: base64
+
+Q3JpdGVyaWE6IGNvcnJlY3RuZXNzLCBjbGFyaXR5LCBzdHlsZS4K
+
+--b1--

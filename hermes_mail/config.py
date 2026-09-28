@@ -1,0 +1,131 @@
+"""Service configuration. The NixOS module writes it as JSON."""
+
+from __future__ import annotations
+
+import json
+import re
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
+
+DEFAULT_SOCKET = "/run/hermes-mail/mail.sock"
+PROVIDERS = ("microsoft", "google", "imap")
+NOTIFY_MODES = ("triage", "all", "none")
+ACCOUNT_NAME = re.compile(r"[a-z][a-z0-9_-]{0,31}")
+
+
+class ConfigError(ValueError):
+    pass
+
+
+@dataclass(frozen=True)
+class Notify:
+    mode: str = "none"
+    target: str = ""
+    policy_file: str = ""
+    mark_read_silent: bool = False
+    task_command: tuple[str, ...] = ()
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "mode": self.mode,
+            "target": self.target,
+            "policy_file": self.policy_file,
+            "mark_read_silent": self.mark_read_silent,
+            "task_command": list(self.task_command),
+        }
+
+
+@dataclass(frozen=True)
+class Account:
+    name: str
+    provider: str
+    address: str
+    auth: str = "oauth"
+    host: str = ""
+    port: int = 993
+    password_file: str = ""
+    folders: tuple[str, ...] = ("INBOX",)
+    sync_days: int = 7
+    poll_seconds: int = 300
+    cache_limit_mb: int = 100
+    max_part_mb: int = 25
+    notify: Notify = field(default_factory=Notify)
+
+
+@dataclass(frozen=True)
+class Config:
+    state_dir: Path
+    socket: Path
+    export_dir: Path
+    extract_root: Path | None
+    accounts: dict[str, Account]
+
+
+def _require(condition: bool, message: str) -> None:
+    if not condition:
+        raise ConfigError(message)
+
+
+def _account(name: str, raw: dict[str, Any]) -> Account:
+    _require(bool(ACCOUNT_NAME.fullmatch(name)), f"account name {name!r} must match {ACCOUNT_NAME.pattern}")
+    provider = raw.get("provider", "")
+    _require(provider in PROVIDERS, f"account {name}: provider must be one of {', '.join(PROVIDERS)}")
+    auth = raw.get("auth") or ("password" if provider == "imap" else "oauth")
+    _require(auth in ("oauth", "password"), f"account {name}: auth must be oauth or password")
+    _require(not (provider == "imap" and auth == "oauth"), f"account {name}: the imap provider supports only password sign-in")
+    _require(bool(raw.get("address")), f"account {name}: address is required")
+    if auth == "password":
+        _require(bool(raw.get("password_file")), f"account {name}: password sign-in needs password_file")
+    if provider == "imap":
+        _require(bool(raw.get("host")), f"account {name}: the imap provider needs host")
+    folders = tuple(raw.get("folders") or ("INBOX",))
+    notify_raw = raw.get("notify") or {}
+    mode = notify_raw.get("mode", "none")
+    _require(mode in NOTIFY_MODES, f"account {name}: notify.mode must be one of {', '.join(NOTIFY_MODES)}")
+    if mode != "none":
+        _require(bool(notify_raw.get("target")), f"account {name}: notify.target is required when notify.mode is {mode}")
+    sync_days = int(raw.get("sync_days", 7))
+    _require(1 <= sync_days <= 365, f"account {name}: sync_days must be 1 to 365")
+    return Account(
+        name=name,
+        provider=provider,
+        address=raw["address"],
+        auth=auth,
+        host=raw.get("host") or "",
+        port=int(raw.get("port") or 993),
+        password_file=raw.get("password_file") or "",
+        folders=folders,
+        sync_days=sync_days,
+        poll_seconds=max(30, int(raw.get("poll_seconds", 300))),
+        cache_limit_mb=max(1, int(raw.get("cache_limit_mb", 100))),
+        max_part_mb=max(1, int(raw.get("max_part_mb", 25))),
+        notify=Notify(
+            mode=mode,
+            target=notify_raw.get("target") or "",
+            policy_file=notify_raw.get("policy_file") or "",
+            mark_read_silent=bool(notify_raw.get("mark_read_silent", False)),
+            task_command=tuple(notify_raw.get("task_command") or ()),
+        ),
+    )
+
+
+def parse(raw: dict[str, Any]) -> Config:
+    _require(bool(raw.get("state_dir")), "state_dir is required")
+    accounts = {name: _account(name, value) for name, value in (raw.get("accounts") or {}).items()}
+    state_dir = Path(raw["state_dir"])
+    return Config(
+        state_dir=state_dir,
+        socket=Path(raw.get("socket") or DEFAULT_SOCKET),
+        export_dir=Path(raw.get("export_dir") or state_dir / "exports"),
+        extract_root=Path(raw["extract_root"]) if raw.get("extract_root") else None,
+        accounts=accounts,
+    )
+
+
+def load(path: str | Path) -> Config:
+    try:
+        raw = json.loads(Path(path).read_text())
+    except (OSError, ValueError) as error:
+        raise ConfigError(f"cannot read {path}: {error}") from error
+    return parse(raw)

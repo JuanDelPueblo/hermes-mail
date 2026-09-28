@@ -1,0 +1,24 @@
+name: hermes-mail
+version: 0.1.0
+description: "Read, search and manage recent IMAP mail through hermes-maild, and triage new mail into chat notifications."
+author: JuanDelPueblo
+license: MIT
+homepage: https://github.com/JuanDelPueblo/hermes-mail
+tags: [mail, imap, email, notifications]
+requires_hermes: ">=0.21"
+platforms:
+  - linux
+provides_tools:
+  - mail_status
+  - mail_list
+  - mail_search
+  - mail_show
+  - mail_attachments
+  - mail_export_attachment
+  - mail_mark_read
+  - mail_mark_unread
+config_schema:
+  socket:
+    type: str
+    default: ""
+    description: "Path of the hermes-maild socket. Empty means $HERMES_MAIL_SOCKET, then /run/hermes-mail/mail.sock."
