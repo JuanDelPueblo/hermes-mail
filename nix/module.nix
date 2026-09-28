@@ -412,7 +412,11 @@ in
           ];
           # The same identity and environment as the Hermes gateway, so the
           # notifier reads the same config, credentials and plugins.
-          inherit (config.systemd.services.hermes-agent) environment;
+          # PATH gets mkForce, because NixOS already defines a default PATH
+          # for every unit and the two definitions would conflict.
+          environment = lib.mapAttrs (
+            name: value: if name == "PATH" then lib.mkForce value else value
+          ) config.systemd.services.hermes-agent.environment;
           serviceConfig = {
             ExecStart = "${lib.getExe' hermesCfg.package "hermes"} mail notify";
             User = hermesCfg.user;

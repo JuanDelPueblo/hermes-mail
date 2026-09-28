@@ -22,7 +22,12 @@ let
         extraPlugins = lib.mkOption { default = [ ]; };
         extraPackages = lib.mkOption { default = [ ]; };
       };
-      config.systemd.services.hermes-agent.environment.HERMES_HOME = "/var/lib/hermes/.hermes";
+      config.systemd.services.hermes-agent.environment = {
+        HERMES_HOME = "/var/lib/hermes/.hermes";
+        # The real module sets a PATH too, which collides with the default
+        # PATH of a unit that copies this environment.
+        PATH = "/run/current-system/sw/bin";
+      };
     };
 
   mkSystem =
