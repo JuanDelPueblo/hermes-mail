@@ -28,6 +28,10 @@ state directory.
   it in chat, put `MEDIA:<path>` on its own line in the reply.
 - `mail_mark_read` and `mail_mark_unread`: change the read state on the
   server. Both accept many mail IDs.
+- `mail_archive`: move messages to the account's archive folder. This removes
+  them from the synced folder, so they stop showing up in `mail_list`; use it
+  only when the owner asks to archive a message, or when the active workflow
+  says to.
 
 The `hermes-mail` command in the terminal has the same operations.
 

@@ -213,6 +213,30 @@ class Service:
             response["error"] = "; ".join(f"{key}: {value.get('error', 'failed')}" for key, value in failed.items())
         return response
 
+    def op_archive(self, request: dict[str, Any]) -> dict[str, Any]:
+        ids = request.get("ids")
+        if not isinstance(ids, list) or not ids:
+            raise RequestError("ids must be a non-empty list of mail IDs")
+        results: dict[str, dict[str, Any]] = {}
+        by_account: dict[str, list[dict[str, Any]]] = {}
+        for identifier in ids:
+            record = self.store.get(str(identifier))
+            if record is None:
+                results[str(identifier)] = {"ok": False, "error": "message not found"}
+            else:
+                by_account.setdefault(record["account"], []).append(record)
+        for name, records in by_account.items():
+            try:
+                results.update(self._account(name).archive(records))
+            except MailError as error:
+                results.update({record["id"]: {"ok": False, "error": str(error)} for record in records})
+        failed = {key: value for key, value in results.items() if not value.get("ok")}
+        response: dict[str, Any] = {"results": results}
+        if failed:
+            response["ok"] = False
+            response["error"] = "; ".join(f"{key}: {value.get('error', 'failed')}" for key, value in failed.items())
+        return response
+
     def op_events(self, request: dict[str, Any]) -> dict[str, Any]:
         timeout = min(max(float(request.get("timeout", 0)), 0.0), MAX_WAIT)
         return {"events": self.store.wait_events(timeout) if timeout else self.store.pending_events()}

@@ -49,10 +49,14 @@ every account:
 4. Every read uses `BODY.PEEK`, so a read never marks mail as read.
 5. The message cache has a size limit for each account, and the service
    removes cached data when a message leaves the sync window.
-6. A folder is opened read-only (`EXAMINE`) except for a read-state change.
-   The service never deletes, moves or expunges mail.
+6. A folder is opened read-only (`EXAMINE`) except for a read-state change or
+   an explicit archive action. Only `mail_archive`/`hermes-mail archive`
+   moves, deletes or expunges mail, and only the UIDs it names: `UID MOVE`
+   when the server has it, otherwise `UID COPY` + `UID STORE +\Deleted` +
+   `UID EXPUNGE` of exactly those UIDs. Nothing else does.
 7. The tests record the IMAP commands of each operation. They fail on any
-   `BODY[]`, `RFC822` or full-folder fetch.
+   `BODY[]`, `RFC822` or full-folder fetch, and on a bare `CLOSE` or
+   `EXPUNGE` outside the archive fallback path.
 
 ## Service
 
@@ -70,7 +74,9 @@ every account:
 - An event queue on the socket: `mail.new` for new mail, `mail.auth` when an
   account needs a new sign-in, and `mail.error` when an account cannot sync
   for 30 minutes. The notifier finishes each event with an acknowledgement.
-- A read-state change is one `UID STORE` of `\Seen` on the server.
+- A read-state change is one `UID STORE` of `\Seen` on the server. An archive
+  action is one `UID MOVE`, or, without it, `UID COPY` + `UID STORE
+  +\Deleted` + `UID EXPUNGE` of exactly the named UIDs.
 
 ## Notifications
 
@@ -134,6 +140,8 @@ Tools:
 - `mail_export_attachment`: cache one attachment and return its path for a
   `MEDIA:` upload.
 - `mail_mark_read` and `mail_mark_unread`: accept many mail IDs.
+- `mail_archive`: moves messages to the account's `archiveFolder` and drops
+  them from the local index. Not reversible from the tool.
 
 Every tool returns `ok: false` and the error text on a failure. The skill tells
 the agent to report every mail error. The CLI keeps the command names of the
@@ -166,9 +174,12 @@ services.hermes-mail = {
 };
 ```
 
-- Each account can set `folders`, `syncDays`, `pollSeconds`, `cacheLimitMB`,
-  `maxPartMB` and `notify`. An account with `notify.mode = "none"` is indexed
-  and the tools can use it, but it sends no messages.
+- Each account can set `folders`, `archiveFolder`, `syncDays`, `pollSeconds`,
+  `cacheLimitMB`, `maxPartMB` and `notify`. An account with `notify.mode =
+  "none"` is indexed and the tools can use it, but it sends no messages.
+  `archiveFolder` defaults to `Archive` for `microsoft` and `[Gmail]/All
+  Mail` for `google`; `imap` has no default and needs one to use
+  `mail_archive`.
 - `hermes.enable` adds the plugin to `services.hermes-agent.extraPlugins` and
   the CLI to `services.hermes-agent.extraPackages`. With `hermes.notifier`
   (the default), it also runs the `hermes-mail-notify` unit.

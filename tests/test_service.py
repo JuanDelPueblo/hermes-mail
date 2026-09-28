@@ -191,6 +191,69 @@ class ServiceTest(unittest.TestCase):
         self.assertFalse(response["ok"])
         self.assertIn("message not found", response["error"])
 
+    def test_archive_moves_the_message_with_uid_move(self):
+        service = self.start(archive_folder="Archive")
+        homework = self.call(service, op="list", query="Homework")["messages"][0]
+        before = len(self.box.commands)
+        result = self.call(service, op="archive", ids=[homework["id"]])
+        self.assertEqual(result["results"][homework["id"]], {"ok": True, "folder": "Archive"})
+        commands = [command.split(" ", 1)[1].upper() for command in self.box.commands[before:]]
+        self.assertTrue(any(command.startswith("UID MOVE") for command in commands))
+        self.assertFalse(any(command.startswith(("UID COPY", "UID STORE", "UID EXPUNGE", "CLOSE", "EXPUNGE")) for command in commands))
+        # The message left the synced folder and left the folder mailing list.
+        self.assertIsNone(service.store.get(homework["id"]))
+        self.assertNotIn(2, {m.uid for m in self.box.messages})
+        self.assertIn(2, {m.uid for m in self.box.folders["Archive"]})
+
+    def test_archive_falls_back_to_copy_store_expunge_without_move(self):
+        self.box.capabilities = "IMAP4rev1 IDLE UIDPLUS UNSELECT AUTH=XOAUTH2 AUTH=PLAIN"
+        service = self.start(archive_folder="Archive")
+        homework = self.call(service, op="list", query="Homework")["messages"][0]
+        before = len(self.box.commands)
+        result = self.call(service, op="archive", ids=[homework["id"]])
+        self.assertEqual(result["results"][homework["id"]], {"ok": True, "folder": "Archive"})
+        commands = [command.split(" ", 1)[1].upper() for command in self.box.commands[before:]]
+        self.assertTrue(any(command.startswith("UID COPY") for command in commands))
+        self.assertTrue(any(command.startswith("UID STORE") and "\\DELETED" in command for command in commands))
+        self.assertTrue(any(command.startswith("UID EXPUNGE") for command in commands))
+        self.assertFalse(any(command.startswith(("UID MOVE", "CLOSE")) or command == "EXPUNGE" for command in commands))
+        self.assertNotIn(2, {m.uid for m in self.box.messages})
+        self.assertIn(2, {m.uid for m in self.box.folders["Archive"]})
+
+    def test_archive_reports_when_the_server_supports_neither_move_nor_uidplus(self):
+        self.box.capabilities = "IMAP4rev1 IDLE UNSELECT AUTH=XOAUTH2 AUTH=PLAIN"
+        service = self.start(archive_folder="Archive")
+        homework = self.call(service, op="list", query="Homework")["messages"][0]
+        response = service.handle({"op": "archive", "ids": [homework["id"]]})
+        self.assertFalse(response["ok"])
+        self.assertIn("neither MOVE nor UIDPLUS", response["error"])
+        # Nothing moved, and the message stays in the index.
+        self.assertIn(2, {m.uid for m in self.box.messages})
+        self.assertIsNotNone(service.store.get(homework["id"]))
+
+    def test_archive_without_an_archive_folder_is_refused(self):
+        # The imap provider has no default archive_folder, unlike microsoft
+        # and google.
+        self.box.password = "app-password"
+        password = self.root / "password"
+        password.write_text("app-password\n")
+        service = self.make_service(
+            signed_in=False, provider="imap", auth="password", host="127.0.0.1", password_file=str(password),
+        )
+        service.start()
+        wait_for(lambda: service.accounts["uni"].status == "idle", message="the first sync")
+        homework = self.call(service, op="list", query="Homework")["messages"][0]
+        response = service.handle({"op": "archive", "ids": [homework["id"]]})
+        self.assertFalse(response["ok"])
+        self.assertIn("no archive folder is configured", response["error"])
+
+    def test_archive_already_in_the_archive_folder_is_refused(self):
+        service = self.start(archive_folder="INBOX")
+        homework = self.call(service, op="list", query="Homework")["messages"][0]
+        response = service.handle({"op": "archive", "ids": [homework["id"]]})
+        self.assertFalse(response["ok"])
+        self.assertIn("already in the archive folder", response["error"])
+
     def test_revoked_sign_in_waits_for_a_new_login(self):
         self.tokens.revoked = True
         service = self.make_service()

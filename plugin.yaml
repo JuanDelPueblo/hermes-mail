@@ -17,6 +17,7 @@ provides_tools:
   - mail_export_attachment
   - mail_mark_read
   - mail_mark_unread
+  - mail_archive
 config_schema:
   socket:
     type: str

@@ -47,6 +47,7 @@ let
     university = {
       provider = "microsoft";
       address = "student@example.edu";
+      archiveFolder = "Archive/2026";
       notify = {
         mode = "triage";
         target = "discord:123";
@@ -153,9 +154,11 @@ in
           and .accounts.university.notify.mode == "triage"
           and .accounts.university.notify.mark_read_silent
           and (.accounts.university.notify.policy_file | startswith("/nix/store/"))
+          and .accounts.university.archive_folder == "Archive/2026"
           and .accounts.gmail.notify.mode == "none"
           and .accounts.gmail.sync_days == 7
           and .accounts.gmail.auth == null
+          and .accounts.gmail.archive_folder == null
         ' "$config"
         echo "$toplevel" > $out
       '';

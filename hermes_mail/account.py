@@ -384,6 +384,57 @@ class MailAccount:
 
         return self._with_action(operation)
 
+    def archive(self, records: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+        """Move messages to the account's archive folder. Return a result for each mail ID.
+
+        Uses UID MOVE (RFC 6851) when the server offers it, which is one
+        atomic command; Gmail and Office365 both support it. Otherwise it
+        falls back to UID COPY, then UID STORE +\\Deleted, then UID EXPUNGE
+        of exactly those UIDs (RFC 4315 UIDPLUS), never a bare EXPUNGE or
+        CLOSE, so it can never remove any other \\Deleted message from the
+        folder. A message that moves out of a synced folder also leaves the
+        local index; the next sync of the destination folder indexes it
+        again only if that folder is itself configured to sync.
+        """
+        destination = self.cfg.archive_folder
+        if not destination:
+            return {
+                record["id"]: {"ok": False, "error": "no archive folder is configured for this account"}
+                for record in records
+            }
+        by_folder: dict[tuple[str, int], list[dict[str, Any]]] = {}
+        for record in records:
+            by_folder.setdefault((record["folder"], record["uidvalidity"]), []).append(record)
+
+        def operation(imap: imaplib.IMAP4) -> dict[str, dict[str, Any]]:
+            results: dict[str, dict[str, Any]] = {}
+            for group in by_folder.values():
+                folder = group[0]["folder"]
+                if folder == destination:
+                    for record in group:
+                        results[record["id"]] = {"ok": False, "error": "the message is already in the archive folder"}
+                    continue
+                self._open(imap, group[0], writable=True)
+                uid_set = compact_set([record["uid"] for record in group])
+                try:
+                    if "MOVE" in imap.capabilities:
+                        _check(imap.uid("MOVE", uid_set, quote_mailbox(destination)), "UID MOVE")
+                    elif "UIDPLUS" in imap.capabilities:
+                        _check(imap.uid("COPY", uid_set, quote_mailbox(destination)), "UID COPY")
+                        _check(imap.uid("STORE", uid_set, "+FLAGS.SILENT", "(\\Deleted)"), "STORE")
+                        _check(imap.uid("EXPUNGE", uid_set), "UID EXPUNGE")
+                    else:
+                        raise MailError(f"the server supports neither MOVE nor UIDPLUS; cannot archive to {destination}")
+                finally:
+                    _leave(imap, folder)
+                ids = [record["id"] for record in group]
+                self.store.remove(ids)
+                for identifier in ids:
+                    results[identifier] = {"ok": True, "folder": destination}
+            return results
+
+        return self._with_action(operation)
+
     def fetch_part(self, record: dict[str, Any], part: Part, limit: int | None = None) -> bytes:
         """Fetch and decode one MIME part. With a limit, fetch only its start."""
         max_bytes = self.cfg.max_part_mb * 1024 * 1024

@@ -94,6 +94,13 @@ EXPORT = _schema(
 )
 MARK_READ = _schema("mail_mark_read", "Mark messages as read on the mail server.", {"mail_ids": MAIL_IDS}, ["mail_ids"])
 MARK_UNREAD = _schema("mail_mark_unread", "Mark messages as unread on the mail server.", {"mail_ids": MAIL_IDS}, ["mail_ids"])
+ARCHIVE = _schema(
+    "mail_archive",
+    "Move messages to the account's archive folder on the mail server. This removes them from the synced "
+    "folder; it is not reversible from this tool.",
+    {"mail_ids": MAIL_IDS},
+    ["mail_ids"],
+)
 
 
 def _filters(args: Dict[str, Any]) -> Dict[str, Any]:
@@ -136,6 +143,10 @@ def mail_mark_unread(args: Dict[str, Any], **_: Any) -> str:
     return _reply(lambda: client().mark([str(item) for item in args.get("mail_ids") or []], False))
 
 
+def mail_archive(args: Dict[str, Any], **_: Any) -> str:
+    return _reply(lambda: client().archive([str(item) for item in args.get("mail_ids") or []]))
+
+
 TOOLS = [
     ("mail_status", STATUS, mail_status, "📬"),
     ("mail_list", LIST, mail_list, "📬"),
@@ -145,4 +156,5 @@ TOOLS = [
     ("mail_export_attachment", EXPORT, mail_export_attachment, "📎"),
     ("mail_mark_read", MARK_READ, mail_mark_read, "✅"),
     ("mail_mark_unread", MARK_UNREAD, mail_mark_unread, "✉️"),
+    ("mail_archive", ARCHIVE, mail_archive, "🗄️"),
 ]

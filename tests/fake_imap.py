@@ -120,7 +120,7 @@ class Mailbox:
     idle_event_delay: float | None = None
     commands: list[str] = field(default_factory=list)
     uidvalidity: int = 1
-    capabilities: str = "IMAP4rev1 IDLE UIDPLUS UNSELECT AUTH=XOAUTH2 AUTH=PLAIN"
+    capabilities: str = "IMAP4rev1 IDLE MOVE UIDPLUS UNSELECT AUTH=XOAUTH2 AUTH=PLAIN"
     folders: dict[str, list[Message]] = field(default_factory=dict)
     lock: threading.RLock = field(default_factory=threading.RLock)
     wake: threading.Event = field(default_factory=threading.Event)
@@ -308,6 +308,36 @@ class Handler(socketserver.StreamRequestHandler):
                 else:
                     message.flags -= names
         self.send(f"{tag} OK STORE completed")
+
+    def uid_MOVE(self, tag: str, arguments: str) -> None:
+        if self.readonly:
+            self.send(f"{tag} NO mailbox is read-only")
+            return
+        uid_set, _, destination = arguments.partition(" ")
+        destination = destination.strip().strip('"')
+        targets = parse_set(uid_set, [message.uid for message in self.messages])
+        for message in [message for message in self.messages if message.uid in targets]:
+            self.messages.remove(message)
+            self.mailbox.folder(destination).append(message)
+        self.send(f"{tag} OK MOVE completed")
+
+    def uid_COPY(self, tag: str, arguments: str) -> None:
+        uid_set, _, destination = arguments.partition(" ")
+        destination = destination.strip().strip('"')
+        targets = parse_set(uid_set, [message.uid for message in self.messages])
+        for message in self.messages:
+            if message.uid in targets:
+                self.mailbox.folder(destination).append(message)
+        self.send(f"{tag} OK COPY completed")
+
+    def uid_EXPUNGE(self, tag: str, arguments: str) -> None:
+        if self.readonly:
+            self.send(f"{tag} NO mailbox is read-only")
+            return
+        targets = parse_set(arguments.strip(), [message.uid for message in self.messages])
+        for message in [message for message in self.messages if message.uid in targets and "\\Deleted" in message.flags]:
+            self.messages.remove(message)
+        self.send(f"{tag} OK EXPUNGE completed")
 
     def do_IDLE(self, tag: str, _: str) -> None:
         self.send("+ idling")

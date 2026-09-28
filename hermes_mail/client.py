@@ -91,6 +91,9 @@ class Client:
     def mark(self, mail_ids: List[str], read: bool) -> Dict[str, Any]:
         return self.request({"op": "mark", "ids": list(mail_ids), "read": read})
 
+    def archive(self, mail_ids: List[str]) -> Dict[str, Any]:
+        return self.request({"op": "archive", "ids": list(mail_ids)})
+
     def events(self, timeout: float = 0) -> List[Dict[str, Any]]:
         return self.request({"op": "events", "timeout": timeout}, timeout=timeout + 30)["events"]
 
