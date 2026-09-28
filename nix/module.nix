@@ -114,6 +114,17 @@ let
           default = [ "INBOX" ];
           description = "The IMAP folders to index. The service waits for new mail with IDLE on the first folder.";
         };
+        archiveFolder = mkOption {
+          type = types.nullOr types.str;
+          default = null;
+          example = "Archive";
+          description = ''
+            The folder `mail_archive`/`hermes-mail archive` moves messages to.
+            The default is `Archive` for the `microsoft` provider and
+            `[Gmail]/All Mail` for `google`. The `imap` provider has no
+            default; set this to use archiving with it.
+          '';
+        };
         syncDays = mkOption {
           type = types.ints.between 1 365;
           default = 7;
@@ -157,6 +168,7 @@ let
         folders
         ;
       password_file = account.passwordFile;
+      archive_folder = account.archiveFolder;
       sync_days = account.syncDays;
       poll_seconds = account.pollSeconds;
       cache_limit_mb = account.cacheLimitMB;

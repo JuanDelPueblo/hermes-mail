@@ -55,6 +55,9 @@ def parser() -> argparse.ArgumentParser:
         command = sub.add_parser(name, help=f"{name.replace('-', ' ')} on the server")
         command.add_argument("mail_ids", nargs="+")
 
+    archive = sub.add_parser("archive", help="move mail to the account's archive folder")
+    archive.add_argument("mail_ids", nargs="+")
+
     sub.add_parser("events", help="show the new-mail events that the notifier has not finished")
 
     auth = sub.add_parser("auth", help="sign in to an OAuth account")
@@ -100,6 +103,8 @@ def run(args: argparse.Namespace) -> Any:
         return client.extract_attachment(args.mail_id, args.attachment_index, args.output_path)
     if command in ("mark-read", "mark-unread"):
         return client.mark(args.mail_ids, command == "mark-read")
+    if command == "archive":
+        return client.archive(args.mail_ids)
     if command == "events":
         return {"events": client.events()}
     if command == "auth":

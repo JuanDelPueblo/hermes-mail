@@ -119,6 +119,16 @@ class ConfigTest(unittest.TestCase):
         self.assertEqual((account.auth, account.folders, account.sync_days, account.notify.mode), ("oauth", ("INBOX",), 7, "none"))
         self.assertEqual(str(cfg.socket), "/run/hermes-mail/mail.sock")
 
+    def test_archive_folder_defaults_by_provider(self):
+        microsoft = config.parse(self.base()).accounts["uni"]
+        self.assertEqual(microsoft.archive_folder, "Archive")
+        google = config.parse(self.base(provider="google")).accounts["uni"]
+        self.assertEqual(google.archive_folder, "[Gmail]/All Mail")
+        imap = config.parse(self.base(provider="imap", host="mail.example.com", password_file="/x")).accounts["uni"]
+        self.assertEqual(imap.archive_folder, "")
+        overridden = config.parse(self.base(archive_folder="Old Mail")).accounts["uni"]
+        self.assertEqual(overridden.archive_folder, "Old Mail")
+
     def test_errors(self):
         for account, message in [
             ({"provider": "yahoo"}, "provider"),

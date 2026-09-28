@@ -34,8 +34,12 @@ The service never downloads a complete mailbox:
 - It downloads the full text or an attachment only when a tool asks for it,
   and an attachment only as its own MIME part.
 - Every read uses `BODY.PEEK`, so reading never marks mail as read.
-- It opens folders read-only, except for one `UID STORE` of `\Seen`. It never
-  deletes, moves or expunges mail.
+- It opens folders read-only, except for a read-state change (one `UID
+  STORE` of `\Seen`) or an explicit `mail_archive`/`hermes-mail archive`
+  call. Archiving moves a message with `UID MOVE`, or, on a server without
+  it, `UID COPY` then `UID STORE +\Deleted` then `UID EXPUNGE` of exactly
+  those UIDs. It is the only path that removes, moves or expunges mail, and
+  only for the messages a caller names; nothing else does.
 
 ## NixOS
 
@@ -84,8 +88,10 @@ Important options:
 - `exportDir`: where `export-attachment` saves files for chat uploads.
 - `extractRoot`: `extract-attachment` writes only below this directory.
 - `accounts.<name>`: `provider`, `address`, `auth`, `host`, `port`,
-  `passwordFile`, `folders`, `syncDays`, `pollSeconds`, `cacheLimitMB`,
-  `maxPartMB` and `notify`.
+  `passwordFile`, `folders`, `archiveFolder`, `syncDays`, `pollSeconds`,
+  `cacheLimitMB`, `maxPartMB` and `notify`. `archiveFolder` defaults to
+  `Archive` for `microsoft` and `[Gmail]/All Mail` for `google`; the `imap`
+  provider has no default.
 
 After the first deployment, enable the plugin in Hermes and restart it:
 
@@ -126,6 +132,7 @@ hermes-mail attachments <mail-id>
 hermes-mail export-attachment <mail-id> <index>
 hermes-mail mark-read <mail-id> [<mail-id> ...]
 hermes-mail mark-unread <mail-id> [<mail-id> ...]
+hermes-mail archive <mail-id> [<mail-id> ...]
 hermes-mail events
 ```
 
@@ -187,7 +194,9 @@ nix fmt
 
 The tests use an in-process fake IMAP server that records every command. They
 fail when the service fetches a full message, uses `BODY` without `PEEK`, or
-sends `CLOSE` or `EXPUNGE`.
+sends a bare `CLOSE` or `EXPUNGE`. A targeted `UID EXPUNGE` from
+`mail_archive`'s fallback path is the only exception, and only for the UIDs
+named in that call.
 
 `scripts/probe.py` is the phase 0 probe. It checks if an account allows direct
 IMAP access, and it changes nothing except one reversible read-state test:

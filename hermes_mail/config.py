@@ -12,6 +12,11 @@ DEFAULT_SOCKET = "/run/hermes-mail/mail.sock"
 PROVIDERS = ("microsoft", "google", "imap")
 NOTIFY_MODES = ("triage", "all", "none")
 ACCOUNT_NAME = re.compile(r"[a-z][a-z0-9_-]{0,31}")
+# mail_archive moves a message here when the account sets no archive_folder.
+# Gmail treats "[Gmail]/All Mail" as the archive: moving a message there just
+# drops its Inbox label, since every message already lives in All Mail. The
+# `imap` provider has no default; archiving needs an explicit archive_folder.
+DEFAULT_ARCHIVE_FOLDER = {"microsoft": "Archive", "google": "[Gmail]/All Mail"}
 
 
 class ConfigError(ValueError):
@@ -46,6 +51,7 @@ class Account:
     port: int = 993
     password_file: str = ""
     folders: tuple[str, ...] = ("INBOX",)
+    archive_folder: str = ""
     sync_days: int = 7
     poll_seconds: int = 300
     cache_limit_mb: int = 100
@@ -96,6 +102,7 @@ def _account(name: str, raw: dict[str, Any]) -> Account:
         port=int(raw.get("port") or 993),
         password_file=raw.get("password_file") or "",
         folders=folders,
+        archive_folder=raw.get("archive_folder") or DEFAULT_ARCHIVE_FOLDER.get(provider, ""),
         sync_days=sync_days,
         poll_seconds=max(30, int(raw.get("poll_seconds", 300))),
         cache_limit_mb=max(1, int(raw.get("cache_limit_mb", 100))),
