@@ -105,3 +105,18 @@ class Client:
 
     def auth_finish(self, account: str, redirect: str) -> Dict[str, Any]:
         return self.request({"op": "auth_finish", "account": account, "redirect": redirect})
+
+    def settings(self) -> Dict[str, Any]:
+        return self.request({"op": "settings"})
+
+    def settings_save(self, account: str, settings: Dict[str, Any], password: Optional[str] = None) -> Dict[str, Any]:
+        payload: Dict[str, Any] = {"op": "settings_save", "account": account, "settings": settings}
+        if password is not None:
+            payload["password"] = password
+        return self.request(payload)
+
+    def settings_delete(self, account: str) -> Dict[str, Any]:
+        return self.request({"op": "settings_delete", "account": account})
+
+    def settings_reset(self, account: str) -> Dict[str, Any]:
+        return self.request({"op": "settings_reset", "account": account})

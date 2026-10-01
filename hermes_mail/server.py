@@ -19,7 +19,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable
 
-from . import auth, config, mime
+from . import auth, config, mime, settings
 from .account import MailAccount, MailError, attachment_part, attachments, default_imap_factory
 from .store import Store
 
@@ -56,22 +56,69 @@ def parse_time(value: str) -> str:
 class Service:
     def __init__(self, cfg: config.Config, imap_factory: Callable = default_imap_factory):
         self.cfg = cfg
+        self.imap_factory = imap_factory
         self.store = Store(cfg.state_dir)
         self.tokens = auth.TokenStore(cfg.state_dir / "tokens")
         self.logins = auth.LoginFlow(self.tokens)
-        self.accounts = {name: MailAccount(account, self.store, self.tokens, imap_factory) for name, account in cfg.accounts.items()}
-        self.store.drop_other_accounts(self.accounts)
+        self.settings = settings.Settings(cfg.state_dir, cfg.base) if cfg.web_settings else None
+        self.settings_errors: dict[str, str] = {}
+        self.accounts: dict[str, MailAccount] = {}
         self.threads: list[threading.Thread] = []
+        self._started = False
+        self._reconfigure = threading.Lock()
+        self.apply()
+
+    def _configured(self) -> dict[str, config.Account]:
+        if self.settings is None:
+            return dict(self.cfg.accounts)
+        accounts, self.settings_errors = self.settings.accounts()
+        for name, error in self.settings_errors.items():
+            log.error("account %s: %s", name, error)
+        return accounts
+
+    def _launch(self, account: MailAccount) -> None:
+        thread = threading.Thread(target=account.run, name=f"account-{account.name}", daemon=True)
+        thread.start()
+        self.threads = [item for item in self.threads if item.is_alive()] + [thread]
+
+    def apply(self) -> None:
+        """Run the configured accounts: start the new and changed ones, stop the
+        removed ones. An unchanged account keeps its worker and connection."""
+        with self._reconfigure:
+            wanted = self._configured()
+            accounts: dict[str, MailAccount] = {}
+            for name, cfg in wanted.items():
+                current = self.accounts.get(name)
+                if current is not None and current.cfg == cfg:
+                    accounts[name] = current
+                    continue
+                if current is not None:
+                    current.close()
+                    if any(getattr(current.cfg, key) != getattr(cfg, key) for key in ("provider", "address", "host", "port")):
+                        # Another mailbox: its index and sign-in do not apply.
+                        self.store.drop_other_folders(name, ())
+                        if (current.cfg.provider, current.cfg.address) != (cfg.provider, cfg.address):
+                            self.tokens.path(name).unlink(missing_ok=True)
+                accounts[name] = MailAccount(cfg, self.store, self.tokens, self.imap_factory)
+                if self._started:
+                    self._launch(accounts[name])
+            for name, current in self.accounts.items():
+                if name not in accounts:
+                    current.close()
+            self.accounts = accounts
+            self.store.drop_other_accounts(accounts)
 
     def start(self) -> None:
-        for account in self.accounts.values():
-            thread = threading.Thread(target=account.run, name=f"account-{account.name}", daemon=True)
-            thread.start()
-            self.threads.append(thread)
+        with self._reconfigure:
+            self._started = True
+            for account in self.accounts.values():
+                self._launch(account)
 
     def stop(self) -> None:
-        for account in self.accounts.values():
-            account.close()
+        with self._reconfigure:
+            self._started = False
+            for account in self.accounts.values():
+                account.close()
 
     # Helpers
 
@@ -262,6 +309,53 @@ class Service:
         account.wake()
         return {"account": account.name, "message": "signed in; the account starts to sync in a few seconds"}
 
+    def _settings(self) -> settings.Settings:
+        if self.settings is None:
+            raise RequestError("account changes are off; the NixOS option services.hermes-mail.webSettings turns them on")
+        return self.settings
+
+    def op_settings(self, _: dict[str, Any]) -> dict[str, Any]:
+        result: dict[str, Any] = {
+            "editable": self.settings is not None,
+            "providers": list(config.PROVIDERS),
+            "default_hosts": {name: provider.host for name, provider in auth.PROVIDERS.items()},
+            "default_archive_folders": dict(config.DEFAULT_ARCHIVE_FOLDER),
+        }
+        if self.settings is None:
+            result["accounts"] = [{
+                "name": name, "source": "nix", "changed": False, "removed": False,
+                "settings": settings.form(account), "nix": settings.form(account),
+                "password": "nix" if account.password_file else "", "error": "",
+            } for name, account in sorted(self.cfg.accounts.items())]
+        else:
+            result["accounts"] = self.settings.describe(self.settings_errors)
+        return result
+
+    def op_settings_save(self, request: dict[str, Any]) -> dict[str, Any]:
+        name = str(request.get("account") or "")
+        password = request.get("password")
+        if password is not None and not isinstance(password, str):
+            raise RequestError("password must be text")
+        self._settings().save(name, request.get("settings") or {}, password)
+        self.apply()
+        return {"account": name}
+
+    def op_settings_delete(self, request: dict[str, Any]) -> dict[str, Any]:
+        name = str(request.get("account") or "")
+        target = self._settings()
+        dashboard_only = name not in target.base
+        target.delete(name)
+        self.apply()
+        if dashboard_only:
+            self.tokens.path(name).unlink(missing_ok=True)
+        return {"account": name}
+
+    def op_settings_reset(self, request: dict[str, Any]) -> dict[str, Any]:
+        name = str(request.get("account") or "")
+        self._settings().reset(name)
+        self.apply()
+        return {"account": name}
+
     def handle(self, request: Any) -> dict[str, Any]:
         if not isinstance(request, dict):
             return {"ok": False, "error": "the request must be a JSON object"}
@@ -270,7 +364,7 @@ class Service:
             return {"ok": False, "error": f"unknown operation {request.get('op')!r}"}
         try:
             result = operation(request)
-        except (RequestError, MailError, auth.AuthError, auth.TransientAuthError) as error:
+        except (RequestError, MailError, auth.AuthError, auth.TransientAuthError, config.ConfigError) as error:
             return {"ok": False, "error": str(error)}
         except (KeyError, TypeError, ValueError) as error:
             return {"ok": False, "error": f"bad request: {error}"}
@@ -333,10 +427,10 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     try:
         cfg = config.load(args.config)
+        service = Service(cfg)
     except config.ConfigError as error:
         log.error("%s", error)
         return 1
-    service = Service(cfg)
     server = SocketServer(cfg.socket, service)
 
     def shutdown(*_: Any) -> None:

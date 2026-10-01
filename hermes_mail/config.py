@@ -28,6 +28,7 @@ class Notify:
     mode: str = "none"
     target: str = ""
     policy_file: str = ""
+    policy: str = ""
     mark_read_silent: bool = False
     task_command: tuple[str, ...] = ()
 
@@ -36,6 +37,7 @@ class Notify:
             "mode": self.mode,
             "target": self.target,
             "policy_file": self.policy_file,
+            "policy": self.policy,
             "mark_read_silent": self.mark_read_silent,
             "task_command": list(self.task_command),
         }
@@ -66,6 +68,10 @@ class Config:
     export_dir: Path
     extract_root: Path | None
     accounts: dict[str, Account]
+    # The accounts as the NixOS module wrote them, before the web settings.
+    base: dict[str, dict[str, Any]] = field(default_factory=dict)
+    # Accept account changes from the socket (the Hermes dashboard).
+    web_settings: bool = True
 
 
 def _require(condition: bool, message: str) -> None:
@@ -73,7 +79,7 @@ def _require(condition: bool, message: str) -> None:
         raise ConfigError(message)
 
 
-def _account(name: str, raw: dict[str, Any]) -> Account:
+def parse_account(name: str, raw: dict[str, Any]) -> Account:
     _require(bool(ACCOUNT_NAME.fullmatch(name)), f"account name {name!r} must match {ACCOUNT_NAME.pattern}")
     provider = raw.get("provider", "")
     _require(provider in PROVIDERS, f"account {name}: provider must be one of {', '.join(PROVIDERS)}")
@@ -111,6 +117,7 @@ def _account(name: str, raw: dict[str, Any]) -> Account:
             mode=mode,
             target=notify_raw.get("target") or "",
             policy_file=notify_raw.get("policy_file") or "",
+            policy=notify_raw.get("policy") or "",
             mark_read_silent=bool(notify_raw.get("mark_read_silent", False)),
             task_command=tuple(notify_raw.get("task_command") or ()),
         ),
@@ -119,7 +126,8 @@ def _account(name: str, raw: dict[str, Any]) -> Account:
 
 def parse(raw: dict[str, Any]) -> Config:
     _require(bool(raw.get("state_dir")), "state_dir is required")
-    accounts = {name: _account(name, value) for name, value in (raw.get("accounts") or {}).items()}
+    base = {name: dict(value) for name, value in (raw.get("accounts") or {}).items()}
+    accounts = {name: parse_account(name, value) for name, value in base.items()}
     state_dir = Path(raw["state_dir"])
     return Config(
         state_dir=state_dir,
@@ -127,6 +135,8 @@ def parse(raw: dict[str, Any]) -> Config:
         export_dir=Path(raw.get("export_dir") or state_dir / "exports"),
         extract_root=Path(raw["extract_root"]) if raw.get("extract_root") else None,
         accounts=accounts,
+        base=base,
+        web_settings=bool(raw.get("web_settings", True)),
     )
 
 
