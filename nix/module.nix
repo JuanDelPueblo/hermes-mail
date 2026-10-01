@@ -156,6 +156,7 @@ let
   serviceConfig = (pkgs.formats.json { }).generate "hermes-mail.json" {
     state_dir = cfg.stateDir;
     socket = socketPath;
+    web_settings = cfg.webSettings;
     export_dir = cfg.exportDir;
     extract_root = cfg.extractRoot;
     accounts = lib.mapAttrs (_: account: {
@@ -263,6 +264,21 @@ in
       ];
       default = "INFO";
       description = "The log level of the service.";
+    };
+
+    webSettings = mkOption {
+      type = types.bool;
+      default = true;
+      description = ''
+        Let the Mail tab of the Hermes dashboard add, change and remove
+        accounts. The service keeps these changes in `settings.json` in
+        `stateDir`, and they replace the accounts of this module with the same
+        name. The members of the service group can make
+        the changes through the socket. They can never set a password file or
+        move an OAuth account to another host. With `false`, the service uses
+        only the accounts of this module. The notification settings are
+        Hermes plugin settings and do not depend on this option.
+      '';
     };
 
     accounts = mkOption {

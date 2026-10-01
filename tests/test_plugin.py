@@ -8,11 +8,13 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import re
 import socketserver
 import sys
 import tempfile
 import threading
 import unittest
+import unittest.mock
 from pathlib import Path
 from typing import Any
 
@@ -245,6 +247,11 @@ class NotifierTest(unittest.TestCase):
             notifier.handle(EVENT, accounts)
         self.assertIn("Notify only for class MATH 101.", self.prompts[0][0])
 
+    def test_policy_text_wins_over_the_policy_file(self):
+        notifier, accounts = self.make(notify={"policy": "Notify for exams only.", "policy_file": "/missing"})
+        notifier.handle(EVENT, accounts)
+        self.assertIn("Notify for exams only.", self.prompts[0][0])
+
     def test_task_command(self):
         with tempfile.TemporaryDirectory() as tmp:
             script = Path(tmp) / "task"
@@ -336,6 +343,149 @@ class NotifierTest(unittest.TestCase):
         notifier.run(stop=stop, wait=0)
         self.assertEqual(self.client.acked, [1])
         self.assertEqual(len(self.sent), 1)
+
+
+class FakeRouter:
+    """Records the routes, as far as the dashboard API uses FastAPI."""
+
+    def __init__(self, **_):
+        self.routes: dict[tuple[str, str], Any] = {}
+
+    def _route(self, method: str, path: str):
+        def add(function):
+            self.routes[(method, path)] = function
+            return function
+        return add
+
+    def get(self, path, **_):
+        return self._route("GET", path)
+
+    def post(self, path, **_):
+        return self._route("POST", path)
+
+
+class FakeHermesConfig:
+    """The plugin settings of Hermes: load_config and save_plugin_settings."""
+
+    def __init__(self):
+        self.settings: dict[str, Any] = {}
+        manifest = (ROOT / "plugin.yaml").read_text().split("config_schema:")[1]
+        self.schema = re.findall(r"^  (\w+):$", manifest, re.MULTILINE)
+
+    def load_config(self):
+        return {"plugins": {"entries": {"hermes-mail": {"settings": json.loads(json.dumps(self.settings))}}}}
+
+    def save_plugin_settings(self, plugin_id, plugin_dir, values):
+        assert plugin_id == "hermes-mail" and Path(plugin_dir) == ROOT
+        for key, value in values.items():
+            if key not in self.schema:
+                raise ValueError(f"{key!r} is not declared in the plugin's config_schema")
+            self.settings[key] = value
+        return list(values)
+
+    def get_config(self, key, default=None):
+        return self.settings.get(key, default)
+
+
+def load_dashboard_api(hermes: FakeHermesConfig):
+    import types
+    modules = {name: types.ModuleType(name) for name in ("fastapi", "hermes_cli", "hermes_cli.config", "hermes_cli.plugins_settings")}
+    modules["fastapi"].APIRouter = FakeRouter
+    modules["hermes_cli.config"].load_config = hermes.load_config
+    modules["hermes_cli.plugins_settings"].save_plugin_settings = hermes.save_plugin_settings
+    patcher = unittest.mock.patch.dict(sys.modules, modules)
+    patcher.start()
+    spec = importlib.util.spec_from_file_location("hermes_mail_dashboard_api", ROOT / "dashboard" / "plugin_api.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module, patcher
+
+
+class DashboardTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        root = Path(self.tmp.name)
+        self.policy = root / "policy.md"
+        self.policy.write_text("Notify for class mail.")
+        nix_notify = {**NOTIFY, "policy_file": str(self.policy), "policy": ""}
+        settings = {"provider": "microsoft", "address": "s@x.edu", "auth": "oauth", "host": "", "port": 993}
+        self.service = FakeService(str(root / "mail.sock"), {
+            "settings": {"ok": True, "editable": True, "providers": ["microsoft", "google", "imap"],
+                         "default_hosts": {}, "default_archive_folders": {},
+                         "accounts": [{"name": "uni", "source": "nix", "changed": False, "removed": False,
+                                       "settings": settings, "nix": settings, "password": "", "error": ""}]},
+            "accounts": {"ok": True, "accounts": {"uni": {"address": "s@x.edu", "notify": nix_notify}}},
+            "status": {"ok": True, "accounts": [{"name": "uni", "status": "idle", "error": "", "last_sync": ""}]},
+            "settings_save": {"ok": True, "account": "uni"},
+            "settings_delete": {"ok": True, "account": "uni"},
+        })
+        self.hermes = FakeHermesConfig()
+        self.hermes.settings["socket"] = str(root / "mail.sock")
+        api, patcher = load_dashboard_api(self.hermes)
+        self.addCleanup(patcher.stop)
+        self.route = lambda method, path: api.router.routes[(method, path)]
+
+    def tearDown(self):
+        self.service.shutdown()
+        self.service.server_close()
+        self.tmp.cleanup()
+
+    def notifier(self):
+        client = triage.Client(self.hermes.settings["socket"])
+        return triage.Notifier(client, None, None, overrides=lambda: self.hermes.get_config("notify", {}))
+
+    def test_settings_show_the_nix_notifications_with_the_policy_text(self):
+        result = self.route("GET", "/settings")()
+        self.assertTrue(result["ok"], result)
+        [uni] = result["accounts"]
+        self.assertEqual(uni["status"], "idle")
+        self.assertEqual(uni["notify"]["nix"]["policy"], "Notify for class mail.")
+        self.assertIsNone(uni["notify"]["dashboard"])
+        self.assertEqual(uni["notify"]["current"]["mode"], "triage")
+
+    def test_notifications_are_a_plugin_setting_that_replaces_the_nix_ones(self):
+        values = {"mode": "all", "target": "telegram:9", "policy": "Only exams.", "mark_read_silent": False,
+                  "task_command": "/bin/task --list 'School work'"}
+        self.assertTrue(self.route("POST", "/accounts/{name}/notify")("uni", values)["ok"])
+        stored = self.hermes.settings["notify"]["uni"]
+        self.assertEqual(stored["task_command"], ["/bin/task", "--list", "School work"])
+        self.assertEqual(self.route("GET", "/settings")()["accounts"][0]["notify"]["dashboard"], stored)
+        notify = self.notifier().accounts()["uni"]["notify"]
+        self.assertEqual((notify["mode"], notify["target"], notify["policy"], notify["policy_file"]),
+                         ("all", "telegram:9", "Only exams.", ""))
+        self.route("POST", "/accounts/{name}/notify/reset")("uni")
+        self.assertEqual(self.hermes.settings["notify"], {})
+        self.assertEqual(self.notifier().accounts()["uni"]["notify"]["target"], "discord:123")
+
+    def test_the_notifier_ignores_a_bad_entry(self):
+        self.hermes.settings["notify"] = {"uni": {"mode": "loud"}}
+        self.assertEqual(self.notifier().accounts()["uni"]["notify"]["mode"], "triage")
+
+    def test_bad_values_are_refused(self):
+        for name, values in [("uni", {"mode": "triage", "target": ""}), ("../x", {"mode": "none"}),
+                             ("uni", {"mode": "none", "task_command": "'open"})]:
+            with self.subTest(values=values):
+                result = self.route("POST", "/accounts/{name}/notify")(name, values)
+                self.assertFalse(result["ok"])
+                self.assertTrue(result["error"])
+        self.assertNotIn("notify", self.hermes.settings)
+
+    def test_account_changes_go_to_the_service(self):
+        self.route("POST", "/accounts/{name}")("uni", {"settings": {"sync_days": 3}, "password": "secret"})
+        self.assertEqual(self.service.requests[-1],
+                         {"op": "settings_save", "account": "uni", "settings": {"sync_days": 3}, "password": "secret"})
+        self.route("POST", "/accounts/{name}/notify")("uni", {"mode": "none"})
+        self.assertTrue(self.route("POST", "/accounts/{name}/remove")("uni")["ok"])
+        self.assertEqual(self.service.requests[-1], {"op": "settings_delete", "account": "uni"})
+        self.assertEqual(self.hermes.settings["notify"], {})
+        result = self.route("POST", "/accounts/{name}/reset")("uni")
+        self.assertEqual(result, {"ok": False, "error": "unknown"})
+
+    def test_triage_model(self):
+        ctx = self.hermes
+        self.assertEqual(triage.triage_model(ctx), {})
+        self.route("POST", "/triage")({"provider": "openrouter", "model": " some/model "})
+        self.assertEqual(triage.triage_model(ctx), {"provider": "openrouter", "model": "some/model"})
 
 
 class ValidateTest(unittest.TestCase):

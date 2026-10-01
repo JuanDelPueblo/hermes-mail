@@ -26,7 +26,7 @@ let
         HERMES_HOME = "/var/lib/hermes/.hermes";
         # The real module sets a PATH too, which collides with the default
         # PATH of a unit that copies this environment.
-        PATH = "/run/current-system/sw/bin";
+        PATH = lib.mkForce "/run/current-system/sw/bin";
       };
     };
 
@@ -121,6 +121,10 @@ in
     test -f ${plugin}/__init__.py
     test -f ${plugin}/skills/mail/SKILL.md
     test -f ${plugin}/hermes_mail/client.py
+    test -f ${plugin}/dashboard/manifest.json
+    test -f ${plugin}/dashboard/plugin_api.py
+    test -f ${plugin}/dashboard/dist/index.js
+    test ! -e ${plugin}/hermes_mail/settings.py
     test ! -e ${plugin}/hermes_mail/auth.py
     test ! -e ${plugin}/scripts
     test ! -e ${plugin}/tests
@@ -164,6 +168,7 @@ in
           and .accounts.gmail.sync_days == 7
           and .accounts.gmail.auth == null
           and .accounts.gmail.archive_folder == null
+          and .web_settings
         ' "$config"
         echo "$toplevel" > $out
       '';

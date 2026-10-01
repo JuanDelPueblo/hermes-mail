@@ -150,6 +150,24 @@ current Thunderbird bridge during the change.
 Personal triage rules, prompts and chat destinations are not part of this
 repository. They stay in the configuration that uses the module.
 
+Dashboard: the plugin adds a Mail tab to the Hermes dashboard
+(`dashboard/`), with its own API under `/api/plugins/hermes-mail/`. Each
+setting stays with its owner:
+
+- Account settings belong to the service. The tab changes them over the
+  socket (`settings`, `settings_save`, `settings_delete`, `settings_reset`).
+  The service keeps them in `settings.json` in the state directory, on top of
+  the NixOS accounts, and starts, restarts or stops only the changed workers.
+  The socket cannot set a password file path or move an OAuth account to
+  another host, so a socket user cannot send a stored secret to another
+  server.
+- Notification and triage settings belong to the plugin. They are Hermes
+  plugin settings (`notify`, `triage_provider`, `triage_model` in the
+  `config_schema`). The tab writes them with the Hermes plugin settings
+  writer, and the notifier reads them with `ctx.get_config`. They stay out of
+  the service, so a socket user cannot set the task command that the
+  notifier runs as the Hermes user.
+
 ## NixOS module
 
 ```nix

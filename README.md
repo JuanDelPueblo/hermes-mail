@@ -92,6 +92,8 @@ Important options:
   `cacheLimitMB`, `maxPartMB` and `notify`. `archiveFolder` defaults to
   `Archive` for `microsoft` and `[Gmail]/All Mail` for `google`; the `imap`
   provider has no default.
+- `webSettings`: let the Mail tab of the Hermes dashboard change the
+  accounts. The default is `true`.
 
 After the first deployment, enable the plugin in Hermes and restart it:
 
@@ -118,6 +120,54 @@ hermes-mail auth login university
 The account starts to sync in a few seconds. If a provider later refuses the
 refresh token, the account stops, and the notifier sends one `Mail problem:`
 message that says to sign in again.
+
+You can also sign in on the Mail tab of the Hermes dashboard. The tab shows
+the same steps.
+
+## Hermes dashboard
+
+The plugin adds a Mail tab to the Hermes dashboard. On this tab you can:
+
+- Add, change and remove accounts, and set the password of a password
+  account.
+- Sign in to an OAuth account.
+- Change the notifications of each account: the mode, the target, the triage
+  policy, `markReadSilent` and the task command.
+- Set the provider and the model of the triage call.
+
+The tab keeps each setting with its owner:
+
+- The accounts belong to `hermes-maild`. The service keeps tab changes in
+  `settings.json` in `stateDir`, on top of the NixOS accounts. A change takes
+  effect at once, without a restart.
+- The notifications and the triage model belong to the plugin. They are
+  Hermes plugin settings in `plugins.entries.hermes-mail.settings`:
+  `notify`, `triage_provider` and `triage_model`, declared in the
+  `config_schema` of `plugin.yaml`. The notifier reads them for each new
+  event. The Hermes Desktop and TUI show the same settings.
+
+The tab writes plugin settings through Hermes, so a Nix-managed Hermes
+install must opt out of managed mode with `HERMES_MANAGED=false`.
+
+The NixOS configuration is the base. A change on the tab replaces the NixOS
+settings of that account. Use "Reset to NixOS" or "Use NixOS settings" to go
+back. A removed NixOS account stays on the tab, and "Restore" brings it back.
+
+The service applies these rules to account changes from the socket:
+
+- A password goes into `stateDir/passwords/<account>` with mode 0600. The
+  socket cannot set a password file path.
+- A NixOS password file stays in use only while the provider, the address,
+  the host and the port stay the same.
+- An OAuth account always uses the host of its provider.
+
+Set `webSettings = false` to keep the accounts only in the NixOS
+configuration. The notifications stay editable, because the plugin owns
+them.
+
+A triage provider or model other than `auxiliary.hermes_mail_triage` needs
+`plugins.entries.hermes-mail.llm.allow_provider_override` or
+`allow_model_override` in the Hermes configuration.
 
 ## Command line
 

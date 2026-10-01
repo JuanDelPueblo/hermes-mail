@@ -23,3 +23,18 @@ config_schema:
     type: str
     default: ""
     description: "Path of the hermes-maild socket. Empty means $HERMES_MAIL_SOCKET, then /run/hermes-mail/mail.sock."
+  notify:
+    type: dict
+    default: {}
+    label: "Notifications"
+    description: "Notifications for each account, keyed by the account name. An entry replaces the NixOS notifications of that account. Keys: mode (triage, all or none), target, policy, mark_read_silent and task_command (a list of words). The Mail tab of the dashboard edits this setting."
+  triage_provider:
+    type: str
+    default: ""
+    label: "Triage provider"
+    description: "The provider of the triage call. Empty means auxiliary.hermes_mail_triage. Another value needs plugins.entries.hermes-mail.llm.allow_provider_override."
+  triage_model:
+    type: str
+    default: ""
+    label: "Triage model"
+    description: "The model of the triage call. Empty means auxiliary.hermes_mail_triage. Another value needs plugins.entries.hermes-mail.llm.allow_model_override."

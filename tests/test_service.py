@@ -67,6 +67,9 @@ class ServiceTest(unittest.TestCase):
     def tearDown(self):
         if self.service:
             self.service.stop()
+            if not self.service.threads:
+                # A started worker can still use the store while it stops.
+                self.service.store.close()
         if self.server:
             self.server.shutdown()
             self.server.server_close()
@@ -75,12 +78,13 @@ class ServiceTest(unittest.TestCase):
         self.tokens.close()
         self.tmp.cleanup()
 
-    def make_service(self, *, signed_in: bool = True, extract: bool = True, **account) -> Service:
-        raw = {
+    def make_service(self, *, signed_in: bool = True, extract: bool = True, web_settings: bool = True, **account) -> Service:
+        self.raw = raw = {
             "state_dir": str(self.root / "state"),
             "socket": str(self.root / "mail.sock"),
             "export_dir": str(self.root / "exports"),
             "extract_root": str(self.root / "home") if extract else None,
+            "web_settings": web_settings,
             "accounts": {"uni": {"provider": "microsoft", "address": USER, "poll_seconds": 30, **account}},
         }
         cfg = config.parse(raw)
@@ -320,6 +324,90 @@ class ServiceTest(unittest.TestCase):
         service.start()
         wait_for(lambda: service.accounts["uni"].status == "idle", message="a password sign-in")
         self.assertEqual(self.call(service, op="list")["count"], 3)
+
+    def fail(self, service: Service, **request) -> str:
+        response = service.handle(request)
+        self.assertFalse(response["ok"], response)
+        return response["error"]
+
+    def test_settings_change_an_account_without_a_restart(self):
+        service = self.start()
+        worker = service.accounts["uni"]
+        settings = self.call(service, op="settings")
+        self.assertTrue(settings["editable"])
+        [uni] = settings["accounts"]
+        self.assertEqual((uni["source"], uni["changed"], uni["settings"]["sync_days"]), ("nix", False, 7))
+        values = {**uni["settings"], "sync_days": 14}
+        self.call(service, op="settings_save", account="uni", settings=values)
+        self.assertIsNot(service.accounts["uni"], worker)
+        self.assertEqual(service.accounts["uni"].cfg.sync_days, 14)
+        self.assertTrue(worker.stop.is_set())
+        wait_for(lambda: service.accounts["uni"].status == "idle", message="the sync with the new settings")
+        # The address did not change, so the sign-in and the index stay.
+        self.assertEqual(self.call(service, op="list")["count"], 3)
+        [uni] = self.call(service, op="settings")["accounts"]
+        self.assertEqual((uni["changed"], uni["settings"]["sync_days"], uni["nix"]["sync_days"]), (True, 14, 7))
+        # The change stays after a restart.
+        service.stop()
+        self.service = Service(config.parse(self.raw), imap_factory=service.imap_factory)
+        self.assertEqual(self.service.accounts["uni"].cfg.sync_days, 14)
+        self.call(self.service, op="settings_reset", account="uni")
+        self.assertEqual(self.service.accounts["uni"].cfg.sync_days, 7)
+        self.assertFalse(self.call(self.service, op="settings")["accounts"][0]["changed"])
+
+    def test_settings_add_and_remove_a_password_account(self):
+        service = self.start()
+        self.box.password = "app-password"
+        values = {"provider": "imap", "address": USER, "host": "127.0.0.1", "folders": ["INBOX"]}
+        self.assertIn("password_file", self.fail(service, op="settings_save", account="other", settings=values))
+        self.call(service, op="settings_save", account="other", settings=values, password="app-password")
+        stored = self.root / "state" / "passwords" / "other"
+        self.assertEqual(stored.stat().st_mode & 0o777, 0o600)
+        self.assertEqual(service.accounts["other"].cfg.password_file, str(stored))
+        wait_for(lambda: service.accounts["other"].status == "idle", message="the new account")
+        self.assertEqual(self.call(service, op="list", account="other")["count"], 3)
+        self.assertEqual(self.call(service, op="settings")["accounts"][0]["password"], "dashboard")
+        self.call(service, op="settings_delete", account="other")
+        self.assertNotIn("other", service.accounts)
+        self.assertFalse(stored.exists())
+        self.assertEqual(self.call(service, op="list", account="")["count"], 3)
+        # A base account is only marked as removed, and it can come back.
+        self.call(service, op="settings_delete", account="uni")
+        self.assertEqual(service.accounts, {})
+        [uni] = self.call(service, op="settings")["accounts"]
+        self.assertTrue(uni["removed"])
+        self.call(service, op="settings_reset", account="uni")
+        wait_for(lambda: service.accounts["uni"].status == "idle", message="the restored account")
+
+    def test_settings_cannot_send_secrets_to_another_server(self):
+        password = self.root / "password"
+        password.write_text("app-password\n")
+        service = self.make_service(provider="microsoft")
+        values = self.call(service, op="settings")["accounts"][0]["settings"]
+        error = self.fail(service, op="settings_save", account="uni", settings={**values, "host": "evil.example"})
+        self.assertIn("host of its provider", error)
+        self.fail(service, op="settings_save", account="uni", settings={**values, "password_file": str(password)})
+        self.fail(service, op="settings_save", account="Bad name", settings=values)
+        self.fail(service, op="settings_save", account="uni", settings={**values, "port": 0})
+        self.fail(service, op="settings_save", account="uni", settings={**values, "folders": []})
+        self.assertEqual(service.accounts["uni"].host, "outlook.office365.com")
+
+    def test_settings_keep_a_nix_password_only_for_the_same_server(self):
+        password = self.root / "password"
+        password.write_text("app-password\n")
+        service = self.make_service(signed_in=False, provider="imap", host="127.0.0.1", password_file=str(password))
+        values = self.call(service, op="settings")["accounts"][0]["settings"]
+        self.call(service, op="settings_save", account="uni", settings={**values, "sync_days": 3})
+        self.assertEqual(service.accounts["uni"].cfg.password_file, str(password))
+        error = self.fail(service, op="settings_save", account="uni", settings={**values, "host": "evil.example"})
+        self.assertIn("password_file", error)
+        self.assertEqual(service.accounts["uni"].cfg.host, "127.0.0.1")
+
+    def test_settings_can_be_turned_off(self):
+        service = self.make_service(web_settings=False)
+        values = self.call(service, op="settings")["accounts"][0]["settings"]
+        self.assertFalse(self.call(service, op="settings")["editable"])
+        self.assertIn("webSettings", self.fail(service, op="settings_save", account="uni", settings=values))
 
     def test_socket_client(self):
         service = self.start()

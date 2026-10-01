@@ -29,6 +29,7 @@ from .hermes_mail.client import Client, MailServiceError
 log = logging.getLogger("hermes_mail.triage")
 
 TASK_KEY = "hermes_mail_triage"
+MODES = ("triage", "all", "none")
 BODY_CHARS = 20_000
 MAX_SEND_ATTEMPTS = 8
 TASK_TIMEOUT = 120
@@ -175,8 +176,10 @@ class Notifier:
         classify: Callable[[str, str], Dict[str, Any]],
         send: Callable[[str, str], None],
         run_task: Callable[[List[str], Dict[str, Any]], str] = run_task_command,
+        overrides: Optional[Callable[[], Any]] = None,
     ):
         self.client = client
+        self.overrides = overrides
         self.classify = classify
         self.send = send
         self.run_task = run_task
@@ -185,9 +188,22 @@ class Notifier:
         # run the triage, the export or the task command a second time.
         self.unsent: Dict[int, tuple] = {}
 
+    def accounts(self) -> Dict[str, Any]:
+        """The service accounts, with the `notify` plugin setting in place of
+        the NixOS notifications of each account that it names."""
+        accounts = self.client.accounts()
+        overrides = self.overrides() if self.overrides else None
+        if not isinstance(overrides, dict):
+            return accounts
+        result = {}
+        for name, account in accounts.items():
+            notify = notify_override(overrides.get(name))
+            result[name] = {**account, "notify": notify} if notify else account
+        return result
+
     def triage(self, mail: Dict[str, Any], notify: Dict[str, Any]) -> Dict[str, Any]:
-        policy = ""
-        if notify.get("policy_file"):
+        policy = notify.get("policy") or ""
+        if not policy and notify.get("policy_file"):
             try:
                 policy = Path(notify["policy_file"]).read_text()
             except OSError as error:
@@ -297,7 +313,7 @@ class Notifier:
         while not stop.is_set():
             try:
                 events = self.client.events(timeout=wait)
-                accounts = self.client.accounts() if events else {}
+                accounts = self.accounts() if events else {}
             except MailServiceError as error:
                 log.warning("the mail service is not reachable: %s", error)
                 stop.wait(10)
@@ -340,9 +356,38 @@ def load_hermes_env() -> None:
     _load_hermes_env()
 
 
+def notify_override(value: Any) -> Optional[Dict[str, Any]]:
+    """One entry of the `notify` plugin setting as notifier settings, or None
+    when the entry is not valid. A policy here is text, so the entry drops the
+    NixOS policy file."""
+    if not isinstance(value, dict):
+        return None
+    mode = value.get("mode", "none")
+    command = value.get("task_command") or []
+    if mode not in MODES or not isinstance(command, list) or not all(isinstance(item, str) for item in command):
+        log.warning("the notify setting %r is not valid; the NixOS notifications apply", value)
+        return None
+    return {
+        "mode": mode,
+        "target": str(value.get("target") or ""),
+        "policy": str(value.get("policy") or ""),
+        "policy_file": "",
+        "mark_read_silent": bool(value.get("mark_read_silent")),
+        "task_command": command,
+    }
+
+
+def triage_model(ctx: Any) -> Dict[str, str]:
+    """The `triage_provider` and `triage_model` plugin settings. An empty value
+    means the setting of the auxiliary task."""
+    values = {"provider": ctx.get_config("triage_provider", ""), "model": ctx.get_config("triage_model", "")}
+    return {key: value.strip() for key, value in values.items() if isinstance(value, str) and value.strip()}
+
+
 def llm_classifier(ctx: Any) -> Callable[[str, str], Dict[str, Any]]:
     def classify(instructions: str, text: str) -> Dict[str, Any]:
         result = ctx.llm.complete_structured(
+            **triage_model(ctx),
             instructions=instructions,
             input=[{"type": "text", "text": text}],
             json_schema=SCHEMA,
@@ -372,6 +417,9 @@ def add_cli(ctx: Any, socket_getter: Callable[[], str]) -> None:
             print(f"hermes mail: {error}", file=sys.stderr)
             return 1
 
+    def overrides() -> Any:
+        return ctx.get_config("notify", {})
+
     def command(args: Any) -> int:
         client = Client(socket_getter())
         if args.mail_command == "status":
@@ -379,12 +427,12 @@ def add_cli(ctx: Any, socket_getter: Callable[[], str]) -> None:
             return 0
         if args.mail_command == "triage":
             mail = client.show(args.mail_id)
-            notify = (client.accounts().get(mail["account"]) or {}).get("notify") or {}
-            notifier = Notifier(client, llm_classifier(ctx), send=lambda *_: None)
+            notifier = Notifier(client, llm_classifier(ctx), send=lambda *_: None, overrides=overrides)
+            notify = (notifier.accounts().get(mail["account"]) or {}).get("notify") or {}
             print(json.dumps(notifier.triage(mail, notify), ensure_ascii=False, indent=1))
             return 0
         load_hermes_env()
-        Notifier(client, llm_classifier(ctx), hermes_send).run()
+        Notifier(client, llm_classifier(ctx), hermes_send, overrides=overrides).run()
         return 0
 
     ctx.register_cli_command(

@@ -1,0 +1,10 @@
+{
+  "name": "hermes-mail",
+  "label": "Mail",
+  "description": "Accounts, sign-in, notifications and triage for hermes-mail.",
+  "icon": "MessageSquare",
+  "version": "0.2.0",
+  "tab": { "path": "/mail", "position": "end" },
+  "entry": "dist/index.js",
+  "api": "plugin_api.py"
+}
