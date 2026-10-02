@@ -130,10 +130,12 @@ in the chat use the normal agent with the plugin tools. `hermes mail triage
 
 The plugin files are at the repository root. `scripts/build-plugin.sh`
 assembles `dist/hermes-mail-plugin`, which holds only the files that Hermes
-loads: the plugin, the skill and the socket client. Hermes installs this
-directory as an extra plugin. `hermes plugins install` of the whole
-repository is not supported: its security scan finds the public Thunderbird
-client secret in the service code and the probe.
+loads: the plugin, the skill and the socket client. The script writes a git
+repository into the directory, because Hermes installs plugins from git
+sources only. Hermes installs this directory as an extra plugin, with a
+`file://` path. `hermes plugins install` of the whole repository is not
+supported: its security scan finds the public Thunderbird client secret in
+the service code and the probe.
 
 Tools:
 

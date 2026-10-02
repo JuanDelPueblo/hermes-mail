@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+command -v git > /dev/null || { echo "build-plugin: git is required" >&2; exit 1; }
+
 cd "$(dirname "$0")/.."
 out="dist/hermes-mail-plugin"
 
@@ -27,5 +29,12 @@ for path in \
 do
   test ! -e "$out/$path" || { echo "build-plugin: $path must not be in the plugin" >&2; exit 1; }
 done
+
+# Hermes installs plugins from git sources only. The build directory becomes a
+# git repository, so `hermes plugins install file://…` works on it.
+git -C "$out" init -q -b main
+git -C "$out" add -A
+git -C "$out" -c user.name="hermes-mail build" -c user.email="build@hermes-mail.invalid" -c commit.gpgsign=false commit -q -m "hermes-mail plugin"
+test -d "$out/.git" || { echo "build-plugin: no git repository in $out" >&2; exit 1; }
 
 echo "plugin in $out"

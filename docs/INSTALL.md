@@ -95,9 +95,12 @@ the socket at `/run/hermes-mail/mail.sock` and read the exported attachments.
 
 ```sh
 scripts/build-plugin.sh
-hermes plugins install dist/hermes-mail-plugin
+hermes plugins install "file://$PWD/dist/hermes-mail-plugin"
 hermes plugins enable hermes-mail
 ```
+
+Hermes installs plugins from git sources only. The build script writes a git
+repository into `dist/hermes-mail-plugin`, so the `file://` path works.
 
 Then restart Hermes. Do not install the whole repository as a plugin: its
 security scan finds the public Thunderbird client secret in the service code.
