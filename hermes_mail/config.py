@@ -1,4 +1,4 @@
-"""Service configuration. The NixOS module writes it as JSON."""
+"""Service configuration, read from a JSON file."""
 
 from __future__ import annotations
 
@@ -68,7 +68,7 @@ class Config:
     export_dir: Path
     extract_root: Path | None
     accounts: dict[str, Account]
-    # The accounts as the NixOS module wrote them, before the web settings.
+    # The accounts as the config file holds them, before the web settings.
     base: dict[str, dict[str, Any]] = field(default_factory=dict)
     # Accept account changes from the socket (the Hermes dashboard).
     web_settings: bool = True

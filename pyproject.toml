@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "hermes-mail"
+version = "0.1.0"
+description = "IMAP index service and command line client for the Hermes agent"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+requires-python = ">=3.14"
+authors = [{ name = "JuanDelPueblo" }]
+
+[project.urls]
+Homepage = "https://github.com/JuanDelPueblo/hermes-mail"
+
+[project.scripts]
+hermes-mail = "hermes_mail.cli:main"
+hermes-maild = "hermes_mail.server:main"
+
+[tool.setuptools]
+packages = ["hermes_mail"]

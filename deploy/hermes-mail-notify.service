@@ -1,0 +1,17 @@
+[Unit]
+Description=hermes-mail notifier: new-mail triage and notifications
+Wants=hermes-mail.service
+After=hermes-mail.service hermes-agent.service
+
+[Service]
+Environment=HERMES_HOME=/var/lib/hermes/.hermes
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
+ExecStart=/usr/local/bin/hermes mail notify
+User=hermes
+Group=hermes
+WorkingDirectory=/var/lib/hermes
+Restart=always
+RestartSec=15
+
+[Install]
+WantedBy=multi-user.target

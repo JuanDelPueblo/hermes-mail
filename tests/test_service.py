@@ -336,7 +336,7 @@ class ServiceTest(unittest.TestCase):
         settings = self.call(service, op="settings")
         self.assertTrue(settings["editable"])
         [uni] = settings["accounts"]
-        self.assertEqual((uni["source"], uni["changed"], uni["settings"]["sync_days"]), ("nix", False, 7))
+        self.assertEqual((uni["source"], uni["changed"], uni["settings"]["sync_days"]), ("base", False, 7))
         values = {**uni["settings"], "sync_days": 14}
         self.call(service, op="settings_save", account="uni", settings=values)
         self.assertIsNot(service.accounts["uni"], worker)
@@ -346,7 +346,7 @@ class ServiceTest(unittest.TestCase):
         # The address did not change, so the sign-in and the index stay.
         self.assertEqual(self.call(service, op="list")["count"], 3)
         [uni] = self.call(service, op="settings")["accounts"]
-        self.assertEqual((uni["changed"], uni["settings"]["sync_days"], uni["nix"]["sync_days"]), (True, 14, 7))
+        self.assertEqual((uni["changed"], uni["settings"]["sync_days"], uni["base"]["sync_days"]), (True, 14, 7))
         # The change stays after a restart.
         service.stop()
         self.service = Service(config.parse(self.raw), imap_factory=service.imap_factory)
@@ -392,7 +392,7 @@ class ServiceTest(unittest.TestCase):
         self.fail(service, op="settings_save", account="uni", settings={**values, "folders": []})
         self.assertEqual(service.accounts["uni"].host, "outlook.office365.com")
 
-    def test_settings_keep_a_nix_password_only_for_the_same_server(self):
+    def test_settings_keep_a_base_password_only_for_the_same_server(self):
         password = self.root / "password"
         password.write_text("app-password\n")
         service = self.make_service(signed_in=False, provider="imap", host="127.0.0.1", password_file=str(password))
@@ -407,7 +407,7 @@ class ServiceTest(unittest.TestCase):
         service = self.make_service(web_settings=False)
         values = self.call(service, op="settings")["accounts"][0]["settings"]
         self.assertFalse(self.call(service, op="settings")["editable"])
-        self.assertIn("webSettings", self.fail(service, op="settings_save", account="uni", settings=values))
+        self.assertIn("web_settings", self.fail(service, op="settings_save", account="uni", settings=values))
 
     def test_socket_client(self):
         service = self.start()

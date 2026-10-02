@@ -190,7 +190,7 @@ class Notifier:
 
     def accounts(self) -> Dict[str, Any]:
         """The service accounts, with the `notify` plugin setting in place of
-        the NixOS notifications of each account that it names."""
+        the base notifications of each account that it names."""
         accounts = self.client.accounts()
         overrides = self.overrides() if self.overrides else None
         if not isinstance(overrides, dict):
@@ -359,13 +359,13 @@ def load_hermes_env() -> None:
 def notify_override(value: Any) -> Optional[Dict[str, Any]]:
     """One entry of the `notify` plugin setting as notifier settings, or None
     when the entry is not valid. A policy here is text, so the entry drops the
-    NixOS policy file."""
+    policy file of the base config."""
     if not isinstance(value, dict):
         return None
     mode = value.get("mode", "none")
     command = value.get("task_command") or []
     if mode not in MODES or not isinstance(command, list) or not all(isinstance(item, str) for item in command):
-        log.warning("the notify setting %r is not valid; the NixOS notifications apply", value)
+        log.warning("the notify setting %r is not valid; the base notifications apply", value)
         return None
     return {
         "mode": mode,

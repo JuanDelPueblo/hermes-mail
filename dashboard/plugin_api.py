@@ -3,7 +3,7 @@
 Two owners keep the settings:
 
 - hermes-maild owns the accounts. This module changes them over the service
-  socket, and the service keeps them on top of the NixOS accounts.
+  socket, and the service keeps them on top of the base accounts.
 - The plugin owns the notifications and the triage model. They are plugin
   settings in plugins.entries.hermes-mail.settings, declared in the
   config_schema of plugin.yaml. This module writes them with the plugin
@@ -128,8 +128,8 @@ def _notify(values: Any) -> Dict[str, Any]:
     }
 
 
-def _nix_notify(notify: Dict[str, Any]) -> Dict[str, Any]:
-    """The NixOS notifications of an account, with the policy file as text."""
+def _base_notify(notify: Dict[str, Any]) -> Dict[str, Any]:
+    """The base notifications of an account, with the policy file as text."""
     policy, policy_error = "", ""
     if notify.get("policy_file"):
         try:
@@ -158,14 +158,14 @@ def settings() -> Dict[str, Any]:
         for account in service["accounts"]:
             name = account["name"]
             state = status.get(name) or {}
-            nix = _nix_notify((running.get(name) or {}).get("notify") or {})
+            base = _base_notify((running.get(name) or {}).get("notify") or {})
             changed = overrides.get(name)
             accounts.append({
                 **account,
                 "status": state.get("status", "removed" if account["removed"] else "not running"),
                 "status_error": state.get("error", ""),
                 "last_sync": state.get("last_sync", ""),
-                "notify": {"nix": nix, "dashboard": changed, "current": changed or nix},
+                "notify": {"base": base, "dashboard": changed, "current": changed or base},
             })
         return {
             "socket": _socket_path(),

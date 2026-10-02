@@ -16,10 +16,10 @@ writes them.
 
 Run it with Python 3.14 or later:
 
-    nix shell nixpkgs#python314 --command python3 scripts/probe.py microsoft --user you@example.edu
-    nix shell nixpkgs#python314 --command python3 scripts/probe.py microsoft --user you@outlook.com
-    nix shell nixpkgs#python314 --command python3 scripts/probe.py google --user you@gmail.com
-    nix shell nixpkgs#python314 --command python3 scripts/probe.py google --user you@gmail.com --auth password
+    python3 scripts/probe.py microsoft --user you@example.edu
+    python3 scripts/probe.py microsoft --user you@outlook.com
+    python3 scripts/probe.py google --user you@gmail.com
+    python3 scripts/probe.py google --user you@gmail.com --auth password
 
 Exit status: 0 for GO, 1 for NO GO, 2 when a required check did not run.
 """
@@ -522,7 +522,7 @@ def parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     if sys.version_info < (3, 14):
         print("This probe needs Python 3.14 or later for IMAP IDLE.", file=sys.stderr)
-        print("Run it with: nix shell nixpkgs#python314 --command python3 scripts/probe.py ...", file=sys.stderr)
+        print("Run it with: python3 scripts/probe.py ...", file=sys.stderr)
         return 2
 
     args = parser().parse_args(argv)

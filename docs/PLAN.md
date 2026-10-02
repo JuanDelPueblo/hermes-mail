@@ -1,11 +1,14 @@
 # hermes-mail plan
 
 hermes-mail gives a Hermes agent access to mail over IMAP, with no desktop
-mail client. It has three parts:
+mail client. It has these parts:
 
 - `hermes-maild`, a small service that keeps a local index of recent mail.
 - A Hermes plugin with typed mail tools and a generic mail skill.
-- A NixOS module that runs the service and connects it to Hermes.
+- Deployment files for systemd: units, sysusers, tmpfiles and a config
+  example. See docs/INSTALL.md.
+- A NixOS module that runs the service and connects it to Hermes. See
+  docs/NIXOS.md.
 
 ## Accounts
 
@@ -25,7 +28,7 @@ with MFA when the account asks for it, and pastes the redirect URL into
 restrictive tenants often block it.
 
 The refresh token is mutable runtime state. The service keeps it in the state
-directory with mode 0600. It is never in the Nix store, in the logs or in a
+directory with mode 0600. It is never in a config file, in the logs or in a
 socket response, so the plugin and the agent never see a token.
 
 When a refresh fails, the service stops that account and sends one
@@ -89,8 +92,8 @@ plan and does no work.
 For this reason, the plugin owns the triage and the delivery of new mail. An
 agent run does not do these steps:
 
-1. The plugin adds the `hermes mail notify` command. The NixOS module runs it
-   as the `hermes-mail-notify` systemd unit, with the user and the
+1. The plugin adds the `hermes mail notify` command. The
+   `hermes-mail-notify` systemd unit runs it with the user and the
    environment of the Hermes gateway. It waits for events on the service
    socket. The service sends no webhook for new mail.
 2. The plugin classifies each message with one structured LLM call
@@ -115,7 +118,7 @@ Each account has a notification policy:
 
 - `mode`: `triage`, `all` or `none`.
 - `target`: the platform and chat that get the messages.
-- `policyFile`: the triage rules, in the configuration that uses the module.
+- `policyFile`: the triage rules, in the config file of the deployment.
 - `markReadSilent`: mark mail as read when the triage says `silent`.
 - `taskCommand`: an optional command for a task, for example a To Do helper.
 
@@ -125,10 +128,10 @@ in the chat use the normal agent with the plugin tools. `hermes mail triage
 
 ## Hermes plugin
 
-The plugin files are at the repository root. The `hermes-mail-plugin`
-package holds only the files that Hermes loads: the plugin, the skill and the
-socket client. The NixOS module installs this package with
-`services.hermes-agent.extraPlugins`. `hermes plugins install` of the whole
+The plugin files are at the repository root. `scripts/build-plugin.sh`
+assembles `dist/hermes-mail-plugin`, which holds only the files that Hermes
+loads: the plugin, the skill and the socket client. Hermes installs this
+directory as an extra plugin. `hermes plugins install` of the whole
 repository is not supported: its security scan finds the public Thunderbird
 client secret in the service code and the probe.
 
@@ -148,7 +151,7 @@ the agent to report every mail error. The CLI keeps the command names of the
 current Thunderbird bridge during the change.
 
 Personal triage rules, prompts and chat destinations are not part of this
-repository. They stay in the configuration that uses the module.
+repository. They stay in the config file of the deployment.
 
 Dashboard: the plugin adds a Mail tab to the Hermes dashboard
 (`dashboard/`), with its own API under `/api/plugins/hermes-mail/`. Each
@@ -157,7 +160,7 @@ setting stays with its owner:
 - Account settings belong to the service. The tab changes them over the
   socket (`settings`, `settings_save`, `settings_delete`, `settings_reset`).
   The service keeps them in `settings.json` in the state directory, on top of
-  the NixOS accounts, and starts, restarts or stops only the changed workers.
+  the base accounts, and starts, restarts or stops only the changed workers.
   The socket cannot set a password file path or move an OAuth account to
   another host, so a socket user cannot send a stored secret to another
   server.

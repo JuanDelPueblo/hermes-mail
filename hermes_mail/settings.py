@@ -1,6 +1,6 @@
 """Account settings from the Hermes dashboard.
 
-The NixOS module writes the base accounts. The dashboard changes them over the
+The config file holds the base accounts. The dashboard changes them over the
 socket, and the service keeps the changes in <state_dir>/settings.json:
 
 - "accounts": the complete settings of each account that the dashboard added
@@ -196,7 +196,7 @@ class Settings:
 
     def reset(self, name: str) -> None:
         if name not in self.base:
-            raise ConfigError(f"the account {name} is not in the NixOS configuration; remove it instead")
+            raise ConfigError(f"the account {name} is not in the base config; remove it instead")
         self.changed.pop(name, None)
         self.removed.discard(name)
         self._drop_password(name)
@@ -219,14 +219,14 @@ class Settings:
                     current = form(parse_account(name, raw))
                 except (ConfigError, TypeError, ValueError):
                     current = {key: raw.get(key) for key in EDITABLE}
-            password = "dashboard" if self.has_password(name) else "nix" if raw and raw.get("password_file") else ""
+            password = "dashboard" if self.has_password(name) else "base" if raw and raw.get("password_file") else ""
             result.append({
                 "name": name,
-                "source": "nix" if name in self.base else "dashboard",
+                "source": "base" if name in self.base else "dashboard",
                 "changed": name in self.changed and name in self.base,
                 "removed": name in self.removed,
                 "settings": current,
-                "nix": base,
+                "base": base,
                 "password": password,
                 "error": errors.get(name, ""),
             })

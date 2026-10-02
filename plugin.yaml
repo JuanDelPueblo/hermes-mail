@@ -27,7 +27,7 @@ config_schema:
     type: dict
     default: {}
     label: "Notifications"
-    description: "Notifications for each account, keyed by the account name. An entry replaces the NixOS notifications of that account. Keys: mode (triage, all or none), target, policy, mark_read_silent and task_command (a list of words). The Mail tab of the dashboard edits this setting."
+    description: "Notifications for each account, keyed by the account name. An entry replaces the base notifications of that account. Keys: mode (triage, all or none), target, policy, mark_read_silent and task_command (a list of words). The Mail tab of the dashboard edits this setting."
   triage_provider:
     type: str
     default: ""
