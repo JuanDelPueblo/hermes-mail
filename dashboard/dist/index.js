@@ -142,8 +142,8 @@
 
     const passwordHint = account && account.password === "dashboard"
       ? "A password is stored. Leave this empty to keep it."
-      : account && account.password === "nix"
-        ? "The NixOS password file applies while the server and the address stay the same."
+      : account && account.password === "base"
+        ? "The password file of the base config applies while the server and the address stay the same."
         : "The service keeps the password in its state directory with mode 0600.";
 
     return h("div", { className: "flex flex-col gap-4" },
@@ -206,16 +206,16 @@
         function () { props.onSaved("Saved the notifications of " + account.name + "."); });
     }
 
-    function useNix() {
+    function useBase() {
       form.submit(function () { return post(accountPath(account.name) + "/notify/reset"); },
-        function () { props.onSaved("The NixOS notifications of " + account.name + " apply again."); });
+        function () { props.onSaved("The base notifications of " + account.name + " apply again."); });
     }
 
     return h("div", { className: "flex flex-col gap-4" },
       h("p", { className: "text-xs text-muted-foreground" }, notify.dashboard
-        ? "These settings replace the NixOS notifications of this account."
-        : "These are the NixOS notifications. A save replaces them for this account."),
-      !notify.dashboard && notify.nix.policy_error ? h(ErrorText, { text: notify.nix.policy_error }) : null,
+        ? "These settings replace the base notifications of this account."
+        : "These are the base notifications. A save replaces them for this account."),
+      !notify.dashboard && notify.base.policy_error ? h(ErrorText, { text: notify.base.policy_error }) : null,
       h("div", { className: "grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3" },
         h(ChoiceField, {
           label: "Mode", value: v.mode, onChange: form.set("mode"),
@@ -228,7 +228,7 @@
         }),
         h(TextField, {
           label: "Task command", value: v.task_command, onChange: form.set("task_command"),
-          placeholder: "/run/current-system/sw/bin/my-task-helper",
+          placeholder: "/usr/local/bin/my-task-helper",
           hint: "Gets the task as JSON on stdin. Empty means no tasks.",
         })),
       h("div", { className: "flex items-center gap-2" },
@@ -244,7 +244,7 @@
       h(ErrorText, { text: form.error }),
       h("div", { className: "flex flex-wrap gap-2" },
         h(Button, { size: "sm", onClick: save, disabled: form.busy }, "Save notifications"),
-        notify.dashboard ? h(Button, { size: "sm", outlined: true, onClick: useNix, disabled: form.busy }, "Use NixOS settings") : null,
+        notify.dashboard ? h(Button, { size: "sm", outlined: true, onClick: useBase, disabled: form.busy }, "Use base settings") : null,
         h(Button, { size: "sm", outlined: true, onClick: props.onCancel, disabled: form.busy }, "Cancel")));
   }
 
@@ -302,7 +302,7 @@
     function reset() {
       setBusy(true);
       post(accountPath(account.name) + "/reset").then(function () {
-        done(account.removed ? "Restored the " + account.name + " account." : "The NixOS settings of " + account.name + " apply again.");
+        done(account.removed ? "Restored the " + account.name + " account." : "The base settings of " + account.name + " apply again.");
       }, function (err) { props.onError(err.message); }).then(function () { setBusy(false); });
     }
 
@@ -310,7 +310,7 @@
       return h(Button, { size: "sm", outlined: open !== key, onClick: function () { setOpen(open === key ? null : key); } }, label);
     }
 
-    const source = account.source === "nix" ? (account.changed ? "NixOS, changed" : "NixOS") : "Dashboard";
+    const source = account.source === "base" ? (account.changed ? "Base config, changed" : "Base config") : "Dashboard";
     const settings = account.settings || {};
     const cancel = function () { setOpen(null); };
 
@@ -334,7 +334,7 @@
             !account.removed ? toggle("notify", "Notifications") : null,
             !account.removed && settings.auth === "oauth" ? toggle("signin", "Sign in") : null,
             editable && (account.changed || account.removed)
-              ? h(Button, { size: "sm", outlined: true, onClick: reset, disabled: busy }, account.removed ? "Restore" : "Reset to NixOS")
+              ? h(Button, { size: "sm", outlined: true, onClick: reset, disabled: busy }, account.removed ? "Restore" : "Reset to base config")
               : null,
             editable && !account.removed
               ? h(Button, { size: "sm", destructive: true, onClick: function () { props.onRemove(account); }, disabled: busy }, "Remove")
@@ -410,7 +410,7 @@
     const notice = error ? h(ErrorText, { text: error })
       : !data ? h("p", { className: "text-sm text-muted-foreground" }, "Loading…")
         : !data.editable ? h("p", { className: "text-xs text-muted-foreground" },
-          "services.hermes-mail.webSettings is off, so the accounts come only from NixOS. Notifications stay editable.")
+          "web_settings is off, so the accounts come only from the base config. Notifications stay editable.")
           : data.accounts.length === 0 ? h("p", { className: "text-sm text-muted-foreground" }, "No accounts yet.") : null;
 
     return h("div", { className: "flex flex-col gap-4" },
@@ -419,7 +419,7 @@
         open: removing !== null,
         title: removing ? "Remove the " + removing.name + " account?" : "",
         description: "The service deletes the index of its mail. The mail on the server stays. " +
-          "A NixOS account stays in the list, and Restore brings it back.",
+          "A base account stays in the list, and Restore brings it back.",
         confirmLabel: "Remove", destructive: true, loading: busy,
         onCancel: function () { setRemoving(null); }, onConfirm: remove,
       }),

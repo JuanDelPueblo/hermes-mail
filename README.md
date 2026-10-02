@@ -1,13 +1,21 @@
 # hermes-mail
 
 IMAP mail access for the [Hermes agent](https://github.com/NousResearch/hermes-agent),
-with no desktop mail client. The repository has three parts:
+with no desktop mail client. The repository has these parts:
 
 - `hermes-maild`: a small service that keeps an index of recent mail and
   talks IMAP. The `hermes-mail` command is its client.
 - A Hermes plugin with `mail_*` tools, a mail skill and a notifier that
   triages new mail into chat messages.
-- A NixOS module that runs the service and connects it to Hermes.
+- Deployment files for systemd: units, sysusers, tmpfiles and a config
+  example. See [docs/INSTALL.md](docs/INSTALL.md).
+- An optional NixOS module that runs the service and connects it to Hermes.
+  See [docs/NIXOS.md](docs/NIXOS.md).
+
+The service and the plugin use only the Python standard library. The service
+needs Python 3.14 or later. The plugin runs on the Python of Hermes (3.12 or
+later) and bundles its own socket client, so Hermes needs no hermes-mail
+package.
 
 The design and its reasons are in [docs/PLAN.md](docs/PLAN.md).
 
@@ -41,68 +49,41 @@ The service never downloads a complete mailbox:
   those UIDs. It is the only path that removes, moves or expunges mail, and
   only for the messages a caller names; nothing else does.
 
-## NixOS
+## Install
 
-Add the flake input and import the module:
+The step-by-step guide for Fedora Server is
+[docs/INSTALL.md](docs/INSTALL.md). In short:
 
-```nix
-{
-  inputs.hermes-mail.url = "github:JuanDelPueblo/hermes-mail";
+1. `pip install .` into a venv, for example `/opt/hermes-mail`.
+2. Create the `hermes-mail` user with `deploy/sysusers.d/hermes-mail.conf`
+   and the directories with `deploy/tmpfiles.d/hermes-mail.conf`.
+3. Write `/etc/hermes-mail/config.json` from `deploy/config.example.json`.
+4. Install `deploy/hermes-mail.service` and start it.
+5. Build the plugin with `scripts/build-plugin.sh` and install it in Hermes.
 
-  # In a NixOS module:
-  imports = [ inputs.hermes-mail.nixosModules.default ];
-}
-```
+The service runs under systemd with hardening: it can reach the network, its
+socket and its state directory, and nothing more.
 
-Example configuration:
+### Configuration
 
-```nix
-services.hermes-mail = {
-  enable = true;
-  accounts = {
-    university = {
-      provider = "microsoft";
-      address = "student@example.edu";
-      notify = {
-        mode = "triage";
-        target = "discord:1234567890";
-        policyFile = ./university-mail-policy.md;
-        markReadSilent = true;
-      };
-    };
-    outlook = { provider = "microsoft"; address = "someone@outlook.com"; };
-    gmail = { provider = "google"; address = "someone@gmail.com"; };
-  };
-  # Adds the plugin and the CLI to services.hermes-agent and runs the notifier.
-  hermes.enable = true;
-};
-```
+The service reads one JSON file. The example in `deploy/config.example.json`
+shows every key:
 
-Important options:
-
-- `user`, `group`: the service identity. The default is a `hermes-mail`
-  system user. The Hermes user needs the group to use the socket at
-  `/run/hermes-mail/mail.sock`. With `hermes.enable`, the module adds the
-  Hermes user to the group.
-- `stateDir`: the index, the cache and the sign-in tokens (mode 0600).
-- `exportDir`: where `export-attachment` saves files for chat uploads.
-- `extractRoot`: `extract-attachment` writes only below this directory.
-- `accounts.<name>`: `provider`, `address`, `auth`, `host`, `port`,
-  `passwordFile`, `folders`, `archiveFolder`, `syncDays`, `pollSeconds`,
-  `cacheLimitMB`, `maxPartMB` and `notify`. `archiveFolder` defaults to
-  `Archive` for `microsoft` and `[Gmail]/All Mail` for `google`; the `imap`
-  provider has no default.
-- `webSettings`: let the Mail tab of the Hermes dashboard change the
+- `state_dir`: the index, the cache and the sign-in tokens.
+- `socket`: the service socket. The default is `/run/hermes-mail/mail.sock`.
+- `export_dir`: where `export-attachment` saves files.
+- `extract_root`: `extract-attachment` writes only below this directory.
+  `null` turns the command off.
+- `web_settings`: let the Mail tab of the Hermes dashboard change the
   accounts. The default is `true`.
+- `accounts.<name>`: `provider`, `address`, `auth`, `host`, `port`,
+  `password_file`, `folders`, `archive_folder`, `sync_days`, `poll_seconds`,
+  `cache_limit_mb`, `max_part_mb` and `notify` with `mode`, `target`,
+  `policy_file`, `policy`, `mark_read_silent` and `task_command`.
 
-After the first deployment, enable the plugin in Hermes and restart it:
-
-```sh
-hermes plugins enable hermes-mail
-```
-
-The plugin is not in `plugins.enabled` by default, because that list is
-runtime Hermes config.
+`archive_folder` defaults to `Archive` for `microsoft` and
+`[Gmail]/All Mail` for `google`. The `imap` provider has no default; set it
+to use archiving.
 
 ## Sign-in
 
@@ -138,32 +119,32 @@ The plugin adds a Mail tab to the Hermes dashboard. On this tab you can:
 The tab keeps each setting with its owner:
 
 - The accounts belong to `hermes-maild`. The service keeps tab changes in
-  `settings.json` in `stateDir`, on top of the NixOS accounts. A change takes
-  effect at once, without a restart.
+  `settings.json` in `stateDir`, on top of the accounts of the config file.
+  A change takes effect at once, without a restart.
 - The notifications and the triage model belong to the plugin. They are
   Hermes plugin settings in `plugins.entries.hermes-mail.settings`:
   `notify`, `triage_provider` and `triage_model`, declared in the
   `config_schema` of `plugin.yaml`. The notifier reads them for each new
   event. The Hermes Desktop and TUI show the same settings.
 
-The tab writes plugin settings through Hermes, so a Nix-managed Hermes
-install must opt out of managed mode with `HERMES_MANAGED=false`.
+The tab writes plugin settings through Hermes, so a Hermes install in
+managed mode must opt out with `HERMES_MANAGED=false`.
 
-The NixOS configuration is the base. A change on the tab replaces the NixOS
-settings of that account. Use "Reset to NixOS" or "Use NixOS settings" to go
-back. A removed NixOS account stays on the tab, and "Restore" brings it back.
+The config file is the base. A change on the tab replaces the settings of
+that account from the config file. Use "Reset to base config" or "Use base
+settings" to go back. A removed base account stays on the tab, and "Restore"
+brings it back.
 
 The service applies these rules to account changes from the socket:
 
 - A password goes into `stateDir/passwords/<account>` with mode 0600. The
   socket cannot set a password file path.
-- A NixOS password file stays in use only while the provider, the address,
-  the host and the port stay the same.
+- A password file from the config stays in use only while the provider, the
+  address, the host and the port stay the same.
 - An OAuth account always uses the host of its provider.
 
-Set `webSettings = false` to keep the accounts only in the NixOS
-configuration. The notifications stay editable, because the plugin owns
-them.
+Set `web_settings` to `false` to keep the accounts only in the config file.
+The notifications stay editable, because the plugin owns them.
 
 A triage provider or model other than `auxiliary.hermes_mail_triage` needs
 `plugins.entries.hermes-mail.llm.allow_provider_override` or
@@ -222,7 +203,7 @@ hermes mail triage <mail-id>
 
 ### Task command
 
-`notify.taskCommand` is an optional command that creates a task when the
+`notify.task_command` is an optional command that creates a task when the
 triage finds assigned work. The notifier runs it with a JSON object on stdin:
 
 ```json
@@ -237,9 +218,9 @@ notification. With a non-zero exit status, the last line of stderr goes into a
 ## Development
 
 ```sh
-nix flake check                 # unit tests, lint, module evaluation, formatting
-nix build .#vm-test -L          # Dovecot and the service in a NixOS VM (needs KVM)
-nix fmt
+make test          # the full suite on Python 3.14, the plugin test on Python 3.12
+make lint          # ruff, also on the plugin code (target py312)
+make build-plugin  # assemble dist/hermes-mail-plugin
 ```
 
 The tests use an in-process fake IMAP server that records every command. They
@@ -252,5 +233,12 @@ named in that call.
 IMAP access, and it changes nothing except one reversible read-state test:
 
 ```sh
-nix shell nixpkgs#python314 --command python3 scripts/probe.py microsoft --user you@example.edu
+python3 scripts/probe.py microsoft --user you@example.edu
+```
+
+`nix/tests/vm.nix` runs Dovecot and the service in a NixOS VM. It needs nix
+and KVM:
+
+```sh
+nix build .#vm-test -L
 ```

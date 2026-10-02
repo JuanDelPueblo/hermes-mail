@@ -1,0 +1,33 @@
+{
+  "state_dir": "/var/lib/hermes-mail",
+  "socket": "/run/hermes-mail/mail.sock",
+  "web_settings": true,
+  "export_dir": "/var/lib/hermes-mail/exports",
+  "extract_root": null,
+  "accounts": {
+    "university": {
+      "provider": "microsoft",
+      "address": "student@example.edu",
+      "folders": ["INBOX"],
+      "sync_days": 7,
+      "notify": {
+        "mode": "triage",
+        "target": "discord:1234567890",
+        "policy_file": "/etc/hermes-mail/university-policy.md",
+        "mark_read_silent": true
+      }
+    },
+    "selfhosted": {
+      "provider": "imap",
+      "address": "user@mail.example.net",
+      "auth": "password",
+      "host": "mail.example.net",
+      "password_file": "/etc/hermes-mail/passwords/selfhosted",
+      "archive_folder": "Archive",
+      "notify": {
+        "mode": "none",
+        "target": ""
+      }
+    }
+  }
+}

@@ -407,14 +407,14 @@ class DashboardTest(unittest.TestCase):
         root = Path(self.tmp.name)
         self.policy = root / "policy.md"
         self.policy.write_text("Notify for class mail.")
-        nix_notify = {**NOTIFY, "policy_file": str(self.policy), "policy": ""}
+        base_notify = {**NOTIFY, "policy_file": str(self.policy), "policy": ""}
         settings = {"provider": "microsoft", "address": "s@x.edu", "auth": "oauth", "host": "", "port": 993}
         self.service = FakeService(str(root / "mail.sock"), {
             "settings": {"ok": True, "editable": True, "providers": ["microsoft", "google", "imap"],
                          "default_hosts": {}, "default_archive_folders": {},
-                         "accounts": [{"name": "uni", "source": "nix", "changed": False, "removed": False,
-                                       "settings": settings, "nix": settings, "password": "", "error": ""}]},
-            "accounts": {"ok": True, "accounts": {"uni": {"address": "s@x.edu", "notify": nix_notify}}},
+                         "accounts": [{"name": "uni", "source": "base", "changed": False, "removed": False,
+                                       "settings": settings, "base": settings, "password": "", "error": ""}]},
+            "accounts": {"ok": True, "accounts": {"uni": {"address": "s@x.edu", "notify": base_notify}}},
             "status": {"ok": True, "accounts": [{"name": "uni", "status": "idle", "error": "", "last_sync": ""}]},
             "settings_save": {"ok": True, "account": "uni"},
             "settings_delete": {"ok": True, "account": "uni"},
@@ -434,16 +434,16 @@ class DashboardTest(unittest.TestCase):
         client = triage.Client(self.hermes.settings["socket"])
         return triage.Notifier(client, None, None, overrides=lambda: self.hermes.get_config("notify", {}))
 
-    def test_settings_show_the_nix_notifications_with_the_policy_text(self):
+    def test_settings_show_the_base_notifications_with_the_policy_text(self):
         result = self.route("GET", "/settings")()
         self.assertTrue(result["ok"], result)
         [uni] = result["accounts"]
         self.assertEqual(uni["status"], "idle")
-        self.assertEqual(uni["notify"]["nix"]["policy"], "Notify for class mail.")
+        self.assertEqual(uni["notify"]["base"]["policy"], "Notify for class mail.")
         self.assertIsNone(uni["notify"]["dashboard"])
         self.assertEqual(uni["notify"]["current"]["mode"], "triage")
 
-    def test_notifications_are_a_plugin_setting_that_replaces_the_nix_ones(self):
+    def test_notifications_are_a_plugin_setting_that_replaces_the_base_ones(self):
         values = {"mode": "all", "target": "telegram:9", "policy": "Only exams.", "mark_read_silent": False,
                   "task_command": "/bin/task --list 'School work'"}
         self.assertTrue(self.route("POST", "/accounts/{name}/notify")("uni", values)["ok"])

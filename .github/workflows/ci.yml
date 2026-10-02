@@ -6,26 +6,36 @@ on:
   pull_request:
 
 jobs:
-  flake-check:
+  lint:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: cachix/install-nix-action@v31
-      - run: nix flake check -L
+      - uses: astral-sh/setup-uv@v6
+      - run: uvx ruff check --no-cache --select E,F,W,B --ignore E501 --target-version py312 .
 
-  vm-test:
+  tests:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Enable KVM
-        run: |
-          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
-          sudo udevadm control --reload-rules
-          sudo udevadm trigger --name-match=kvm
-      - uses: cachix/install-nix-action@v31
+      - uses: actions/setup-python@v5
         with:
-          extra_nix_config: system-features = nixos-test benchmark big-parallel kvm
-      - run: nix build -L .#vm-test
+          python-version: "3.14"
+      - name: Run the test suite
+        run: python -W error::ResourceWarning -m unittest discover -s tests -v
+      - name: Check the pip package
+        run: |
+          python -m pip install --quiet .
+          hermes-mail --help > /dev/null
+          hermes-maild --help > /dev/null
+
+  plugin-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m unittest tests.test_plugin -v
 
   hermes-plugin:
     runs-on: ubuntu-latest
@@ -34,9 +44,8 @@ jobs:
       HERMES_REF: v2026.9.24
     steps:
       - uses: actions/checkout@v4
-      - uses: cachix/install-nix-action@v31
-      - name: Build the plugin package
-        run: nix build -o plugin .#hermes-mail-plugin
+      - name: Build the plugin directory
+        run: scripts/build-plugin.sh
       - uses: actions/checkout@v4
         with:
           repository: NousResearch/hermes-agent
@@ -49,6 +58,6 @@ jobs:
         run: |
           uv sync --python 3.12
           export HERMES_HOME="$(mktemp -d)"
-          plugin="$(readlink -f ../plugin)"
+          plugin="$(readlink -f ../dist/hermes-mail-plugin)"
           uv run --no-sync hermes plugins validate "$plugin"
           uv run --no-sync hermes plugins doctor "$plugin" --ci

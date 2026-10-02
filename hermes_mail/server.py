@@ -311,7 +311,7 @@ class Service:
 
     def _settings(self) -> settings.Settings:
         if self.settings is None:
-            raise RequestError("account changes are off; the NixOS option services.hermes-mail.webSettings turns them on")
+            raise RequestError("account changes are off; the web_settings setting of the config file turns them on")
         return self.settings
 
     def op_settings(self, _: dict[str, Any]) -> dict[str, Any]:
@@ -323,9 +323,9 @@ class Service:
         }
         if self.settings is None:
             result["accounts"] = [{
-                "name": name, "source": "nix", "changed": False, "removed": False,
-                "settings": settings.form(account), "nix": settings.form(account),
-                "password": "nix" if account.password_file else "", "error": "",
+                "name": name, "source": "base", "changed": False, "removed": False,
+                "settings": settings.form(account), "base": settings.form(account),
+                "password": "base" if account.password_file else "", "error": "",
             } for name, account in sorted(self.cfg.accounts.items())]
         else:
             result["accounts"] = self.settings.describe(self.settings_errors)
