@@ -122,6 +122,8 @@ class Mailbox:
     uidvalidity: int = 1
     capabilities: str = "IMAP4rev1 IDLE MOVE UIDPLUS UNSELECT AUTH=XOAUTH2 AUTH=PLAIN"
     folders: dict[str, list[Message]] = field(default_factory=dict)
+    # The lines that LIST sends after "* LIST ", for example '(\\Archive) "/" "Archive"'. Empty means INBOX and the folders.
+    listing: list[str] = field(default_factory=list)
     lock: threading.RLock = field(default_factory=threading.RLock)
     wake: threading.Event = field(default_factory=threading.Event)
     idling: threading.Event = field(default_factory=threading.Event)
@@ -211,6 +213,12 @@ class Handler(socketserver.StreamRequestHandler):
         self.send(f"+ {error}")
         self.rfile.readline()
         self.send(f"{tag} NO AUTHENTICATE failed")
+
+    def do_LIST(self, tag: str, _: str) -> None:
+        lines = self.mailbox.listing or [f'() "/" "{name}"' for name in ["INBOX", *self.mailbox.folders]]
+        for line in lines:
+            self.send(f"* LIST {line}")
+        self.send(f"{tag} OK LIST completed")
 
     def do_STATUS(self, tag: str, arguments: str) -> None:
         messages = self.mailbox.folder(arguments.split(" ", 1)[0].strip('"'))

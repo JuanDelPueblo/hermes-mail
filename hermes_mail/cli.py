@@ -25,6 +25,9 @@ def parser() -> argparse.ArgumentParser:
 
     sub.add_parser("status", help="show the accounts, their sign-in state and the last sync")
 
+    folders = sub.add_parser("folders", help="list the folders of an account on the mail server")
+    folders.add_argument("account")
+
     for name in ("list", "search"):
         command = sub.add_parser(name, help="list recent mail" if name == "list" else "search sender, subject and preview")
         if name == "search":
@@ -88,6 +91,8 @@ def run(args: argparse.Namespace) -> Any:
     command = args.command
     if command == "status":
         return client.status()
+    if command == "folders":
+        return client.folders(args.account)
     if command in ("list", "search"):
         return client.list(
             account=args.account, since=args.since, until=args.until, unread=args.unread,

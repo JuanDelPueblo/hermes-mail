@@ -8,6 +8,7 @@ and None for NIL.
 
 from __future__ import annotations
 
+import base64
 import re
 from dataclasses import dataclass, field
 from datetime import date
@@ -30,9 +31,82 @@ def imap_date(value: date) -> str:
     return f"{value.day:02d}-{MONTHS[value.month - 1]}-{value.year}"
 
 
+def encode_mailbox(name: str) -> str:
+    """Encode a mailbox name in the modified UTF-7 of RFC 3501, section 5.1.3."""
+    out: list[str] = []
+    run: list[str] = []
+
+    def flush() -> None:
+        if run:
+            data = base64.b64encode("".join(run).encode("utf-16-be")).decode().rstrip("=")
+            out.append("&" + data.replace("/", ",") + "-")
+            run.clear()
+
+    for char in name:
+        if " " <= char <= "~":
+            flush()
+            out.append("&-" if char == "&" else char)
+        else:
+            run.append(char)
+    flush()
+    return "".join(out)
+
+
+def decode_mailbox(name: str) -> str:
+    """Decode a mailbox name from the modified UTF-7 of RFC 3501. A name that is not valid stays as it is."""
+
+    def convert(match: re.Match[str]) -> str:
+        data = match.group(1)
+        if not data:
+            return "&"
+        padded = data.replace(",", "/") + "=" * (-len(data) % 4)
+        try:
+            return base64.b64decode(padded, validate=True).decode("utf-16-be")
+        except (ValueError, UnicodeDecodeError):
+            return match.group(0)
+
+    return re.sub(r"&([A-Za-z0-9+,]*)-", convert, name)
+
+
 def quote_mailbox(name: str) -> str:
-    """Quote a mailbox name for imaplib, which sends arguments as they are."""
-    return '"' + name.replace("\\", "\\\\").replace('"', '\\"') + '"'
+    """Encode and quote a mailbox name for imaplib, which sends arguments as they are."""
+    return '"' + encode_mailbox(name).replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+_LIST_LINE = re.compile(rb"^\((?P<flags>[^)]*)\)\s+(?:\"(?:\\.|[^\"\\])*\"|NIL)\s+(?P<name>.*)$", re.DOTALL)
+
+
+def parse_list(data: list[Any]) -> list[dict[str, Any]]:
+    """Parse the data of an imaplib LIST call into folders: {"name", "flags"}.
+    The name is decoded. A folder that cannot be selected (\\Noselect or
+    \\NonExistent) is left out."""
+    folders: list[dict[str, Any]] = []
+    index = 0
+    while index < len(data):
+        item = data[index]
+        index += 1
+        literal: bytes | None = None
+        if isinstance(item, tuple):
+            item, literal = item[0], item[1]
+            if index < len(data) and data[index] == b"":
+                index += 1
+        if not isinstance(item, bytes):
+            continue
+        match = _LIST_LINE.match(item.strip())
+        if match is None:
+            raise ParseError(f"cannot read the LIST line {item!r}")
+        raw = match.group("name").strip()
+        if literal is not None:
+            name = literal
+        elif raw.startswith(b'"'):
+            name = re.sub(rb"\\(.)", rb"\1", raw[1:-1])
+        else:
+            name = raw
+        flags = match.group("flags").decode(errors="replace").split()
+        if {flag.lower() for flag in flags} & {"\\noselect", "\\nonexistent"}:
+            continue
+        folders.append({"name": decode_mailbox(name.decode("ascii", errors="replace")), "flags": flags})
+    return folders
 
 
 def compact_set(uids: list[int]) -> str:

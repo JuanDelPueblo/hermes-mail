@@ -40,6 +40,45 @@ class ParseFetchTest(unittest.TestCase):
             imapproto.parse_fetch([b"1 (UID 1 FLAGS (\\Seen)"])
 
 
+class MailboxNameTest(unittest.TestCase):
+    def test_modified_utf7_round_trip(self):
+        for plain, encoded in (
+            ("INBOX", "INBOX"),
+            ("Programación", "Programaci&APM-n"),
+            ("R&D", "R&-D"),
+            ("日本語", "&ZeVnLIqe-"),
+            ("a/é/b", "a/&AOk-/b"),
+        ):
+            self.assertEqual(imapproto.encode_mailbox(plain), encoded)
+            self.assertEqual(imapproto.decode_mailbox(encoded), plain)
+
+    def test_decode_keeps_a_name_that_is_not_valid(self):
+        self.assertEqual(imapproto.decode_mailbox("a&!!-b"), "a&!!-b")
+
+    def test_quote_encodes_the_name(self):
+        self.assertEqual(imapproto.quote_mailbox('Clases/"Programación"'), '"Clases/\\"Programaci&APM-n\\""')
+
+
+class ParseListTest(unittest.TestCase):
+    def test_quoted_atom_and_literal_names(self):
+        data = [
+            b'(\\HasNoChildren) "/" INBOX',
+            b'(\\HasNoChildren \\Sent) "." "Sent Items"',
+            (b'(\\HasNoChildren) "/" {5}', b"Dr&-aft"),
+            b"",
+            b'(\\Noselect \\HasChildren) "/" "[Gmail]"',
+            b'(\\NonExistent) NIL "Gone"',
+            b'() "/" "Say \\"hi\\""',
+        ]
+        folders = imapproto.parse_list(data)
+        self.assertEqual([item["name"] for item in folders], ["INBOX", "Sent Items", "Dr&aft", 'Say "hi"'])
+        self.assertEqual(folders[1]["flags"], ["\\HasNoChildren", "\\Sent"])
+
+    def test_a_line_that_is_not_a_list_response_is_an_error(self):
+        with self.assertRaises(imapproto.ParseError):
+            imapproto.parse_list([b"nonsense"])
+
+
 class BodyStructureTest(unittest.TestCase):
     def test_nested_multipart(self):
         structure = imapproto.parse_fetch([

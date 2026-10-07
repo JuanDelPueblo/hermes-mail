@@ -163,6 +163,11 @@ class Service:
         return {"accounts": {name: {"address": account.cfg.address, "notify": account.cfg.notify.to_dict()}
                              for name, account in self.accounts.items()}}
 
+    def op_folders(self, request: dict[str, Any]) -> dict[str, Any]:
+        account = self._account(str(request.get("account") or ""))
+        return {"account": account.name, "folders": account.list_folders(),
+                "archive_folder": account.cfg.archive_folder, "synced": list(account.cfg.folders)}
+
     def op_list(self, request: dict[str, Any]) -> dict[str, Any]:
         account = request.get("account") or ""
         if account:

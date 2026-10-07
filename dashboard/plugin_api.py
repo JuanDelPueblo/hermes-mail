@@ -180,6 +180,15 @@ def settings() -> Dict[str, Any]:
     return _answer(read)
 
 
+@router.get("/accounts/{name}/folders")
+def folders(name: str) -> Dict[str, Any]:
+    def read() -> Dict[str, Any]:
+        response = _call("folders", account=_account(name))
+        return {key: response[key] for key in ("folders", "archive_folder", "synced")}
+
+    return _answer(read)
+
+
 @router.post("/accounts/{name}")
 def save_account(name: str, body: Dict[str, Any]) -> Dict[str, Any]:
     def save() -> None:

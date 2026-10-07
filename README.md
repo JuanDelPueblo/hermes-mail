@@ -110,7 +110,10 @@ the same steps.
 The plugin adds a Mail tab to the Hermes dashboard. On this tab you can:
 
 - Add, change and remove accounts, and set the password of a password
-  account.
+  account. For a saved account that is signed in, the archive folder is a
+  drop-down and the synced folders are a multi-select, both read from the
+  mail server with a read-only `LIST`. The tab falls back to text fields when
+  the server cannot be reached.
 - Sign in to an OAuth account.
 - Change the notifications of each account: the mode, the target, the triage
   policy, `markReadSilent` and the task command.
@@ -156,6 +159,7 @@ Every command prints JSON:
 
 ```sh
 hermes-mail status
+hermes-mail folders university
 hermes-mail list --since 2d --unread
 hermes-mail search "exam" --account university
 hermes-mail show <mail-id>

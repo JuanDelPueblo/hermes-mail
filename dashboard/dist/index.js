@@ -115,6 +115,72 @@
     return { values: values, setValues: setValues, set: set, busy: busy, error: error, submit: submit };
   }
 
+  const DEFAULT_CHOICE = "__default__";
+
+  function splitLines(text) {
+    return String(text).split("\n").map(function (item) { return item.trim(); }).filter(Boolean);
+  }
+
+  function folderLabel(folder) {
+    return folder.special && folder.special !== "inbox" ? folder.name + " (" + folder.special + ")" : folder.name;
+  }
+
+  // The folders of a saved account, read from the mail server. `state` is
+  // loading, ready, error or none (an account that is not saved yet).
+  function useFolders(account) {
+    const [list, setList] = useState({ state: account ? "loading" : "none", folders: [], error: "" });
+    const load = useCallback(function () {
+      if (!account) return;
+      setList(function (current) { return Object.assign({}, current, { state: "loading" }); });
+      SDK.fetchJSON(API + accountPath(account.name) + "/folders").then(function (data) {
+        if (!data.ok) throw new Error(data.error);
+        setList({ state: "ready", folders: data.folders, error: "" });
+      }).catch(function (err) {
+        setList({ state: "error", folders: [], error: err.message || String(err) });
+      });
+    }, [account && account.name]);
+    useEffect(function () { load(); }, [load]);
+    return { list: list, reload: load };
+  }
+
+  function FolderPicker(props) {
+    const checkboxId = React.useId();
+    const selected = splitLines(props.value);
+    const known = props.folders.map(function (folder) { return folder.name; });
+    const missing = selected.filter(function (name) { return known.indexOf(name) < 0; });
+
+    function toggle(name, on) {
+      const next = selected.filter(function (item) { return item !== name; });
+      if (on) next.push(name);
+      props.onChange(next.join("\n"));
+    }
+
+    function row(name, label, index) {
+      const id = checkboxId + "-" + index;
+      return h("div", { key: name, className: "flex items-center gap-2" },
+        h(Checkbox, { id: id, checked: selected.indexOf(name) >= 0, onCheckedChange: function (value) { toggle(name, value === true); } }),
+        h(Label, { htmlFor: id }, label));
+    }
+
+    return h(Field, { label: "Folders", hint: "The service waits for new mail on the first selected folder. A folder that you select later comes last." },
+      function () {
+        return h("div", { className: "flex max-h-64 flex-col gap-2 overflow-y-auto border border-midground/15 bg-background/40 p-3" },
+          props.folders.map(function (folder, index) { return row(folder.name, folderLabel(folder), index); }),
+          missing.map(function (name, index) { return row(name, name + " (not on the server)", props.folders.length + index); }));
+      });
+  }
+
+  // Options of the archive select: the provider default, the server folders, and
+  // the current value when the server has no such folder.
+  function archiveOptions(folders, current, fallback) {
+    const options = [[DEFAULT_CHOICE, "Default (" + (fallback || "none") + ")"]];
+    folders.forEach(function (folder) { options.push([folder.name, folderLabel(folder)]); });
+    if (current && !folders.some(function (folder) { return folder.name === current; })) {
+      options.push([current, current + " (not on the server)"]);
+    }
+    return options;
+  }
+
   function AccountForm(props) {
     const meta = props.meta;
     const account = props.account;
@@ -122,6 +188,8 @@
     const form = useForm(Object.assign({}, start, { name: "", password: "", folders: (start.folders || []).join("\n") }));
     const v = form.values;
     const oauth = v.auth === "oauth";
+    const folders = useFolders(account);
+    const listed = folders.list.state === "ready";
 
     function setProvider(value) {
       form.setValues(Object.assign({}, v, { provider: value, auth: value === "imap" ? "password" : "oauth" }));
@@ -131,8 +199,7 @@
       const settings = {};
       Object.keys(NEW_ACCOUNT).forEach(function (key) { settings[key] = v[key]; });
       NUMBERS.forEach(function (key) { settings[key] = Number(v[key]); });
-      settings.folders = String(v.folders).split("\n").map(function (item) { return item.trim(); })
-        .filter(Boolean);
+      settings.folders = splitLines(v.folders);
       if (oauth) settings.host = "";
       const name = account ? account.name : v.name.trim();
       form.submit(function () {
@@ -171,7 +238,12 @@
           hint: oauth ? "An OAuth account always uses the host of its provider." : null,
         }),
         h(TextField, { label: "IMAP port", type: "number", value: v.port, onChange: form.set("port"), hint: "The service always uses TLS." }),
-        h(TextField, {
+        listed ? h(ChoiceField, {
+          label: "Archive folder", value: v.archive_folder || DEFAULT_CHOICE,
+          onChange: function (value) { form.set("archive_folder")(value === DEFAULT_CHOICE ? "" : value); },
+          options: archiveOptions(folders.list.folders, v.archive_folder, meta.default_archive_folders[v.provider]),
+          hint: "Where mail_archive moves mail.",
+        }) : h(TextField, {
           label: "Archive folder", value: v.archive_folder, onChange: form.set("archive_folder"),
           placeholder: meta.default_archive_folders[v.provider] || "Archive",
           hint: "Where mail_archive moves mail. Empty means the default of the provider.",
@@ -180,10 +252,17 @@
         h(TextField, { label: "Full check interval (seconds)", type: "number", value: v.poll_seconds, onChange: form.set("poll_seconds") }),
         h(TextField, { label: "Text cache limit (MB)", type: "number", value: v.cache_limit_mb, onChange: form.set("cache_limit_mb") }),
         h(TextField, { label: "Largest attachment (MB)", type: "number", value: v.max_part_mb, onChange: form.set("max_part_mb") })),
-      h(TextAreaField, {
+      listed ? h(FolderPicker, { folders: folders.list.folders, value: v.folders, onChange: form.set("folders") }) : h(TextAreaField, {
         label: "Folders", rows: 3, value: v.folders, onChange: form.set("folders"),
         hint: "One folder for each line. The service waits for new mail on the first folder.",
       }),
+      folders.list.state === "loading" ? h("p", { className: "text-xs text-muted-foreground" }, "Reading the folders from the mail server...") : null,
+      folders.list.state === "error" ? h("p", { className: "text-xs text-muted-foreground" },
+        "The folder list is not available (" + folders.list.error + "). Type the folder names instead.") : null,
+      folders.list.state === "none" ? h("p", { className: "text-xs text-muted-foreground" },
+        "After you add the account and sign in, edit it to choose the folders from a list.") : null,
+      account && folders.list.state !== "loading"
+        ? h("div", null, h(Button, { size: "sm", outlined: true, onClick: folders.reload }, "Reload the folders")) : null,
       h(ErrorText, { text: form.error }),
       h("div", { className: "flex flex-wrap gap-2" },
         h(Button, { size: "sm", onClick: save, disabled: form.busy }, account ? "Save account" : "Add account"),
