@@ -32,6 +32,10 @@ state directory.
   them from the synced folder, so they stop showing up in `mail_list`; use it
   only when the owner asks to archive a message, or when the active workflow
   says to.
+- `mail_triage_log`: what the notifier did with new mail: the decision, the
+  reason, the summary, the actions and any error of each message. Use it when
+  the owner asks what happened to a message, why something was or was not
+  notified, or what came in while they were away. Give `id` for one entry.
 
 The `hermes-mail` command in the terminal has the same operations.
 

@@ -72,6 +72,8 @@ class Config:
     base: dict[str, dict[str, Any]] = field(default_factory=dict)
     # Accept account changes from the socket (the Hermes dashboard).
     web_settings: bool = True
+    # Days to keep the triage log. 0 keeps it for ever.
+    triage_retention_days: int = 30
 
 
 def _require(condition: bool, message: str) -> None:
@@ -129,6 +131,8 @@ def parse(raw: dict[str, Any]) -> Config:
     base = {name: dict(value) for name, value in (raw.get("accounts") or {}).items()}
     accounts = {name: parse_account(name, value) for name, value in base.items()}
     state_dir = Path(raw["state_dir"])
+    retention = int(raw.get("triage_retention_days", 30))
+    _require(0 <= retention <= 3650, "triage_retention_days must be 0 to 3650")
     return Config(
         state_dir=state_dir,
         socket=Path(raw.get("socket") or DEFAULT_SOCKET),
@@ -137,6 +141,7 @@ def parse(raw: dict[str, Any]) -> Config:
         accounts=accounts,
         base=base,
         web_settings=bool(raw.get("web_settings", True)),
+        triage_retention_days=retention,
     )
 
 

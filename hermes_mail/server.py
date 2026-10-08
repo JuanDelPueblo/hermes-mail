@@ -21,7 +21,7 @@ from typing import Any, Callable
 
 from . import auth, config, mime, settings
 from .account import MailAccount, MailError, attachment_part, attachments, default_imap_factory
-from .store import Store
+from .store import TRIAGE_STATUSES, Store
 
 log = logging.getLogger("hermes_mail")
 
@@ -67,6 +67,7 @@ class Service:
         self._started = False
         self._reconfigure = threading.Lock()
         self.apply()
+        self.store.triage_prune(cfg.triage_retention_days)
 
     def _configured(self) -> dict[str, config.Account]:
         if self.settings is None:
@@ -292,6 +293,75 @@ class Service:
     def op_events(self, request: dict[str, Any]) -> dict[str, Any]:
         timeout = min(max(float(request.get("timeout", 0)), 0.0), MAX_WAIT)
         return {"events": self.store.wait_events(timeout) if timeout else self.store.pending_events()}
+
+    # The triage log. The notifier writes it, and the CLI, the plugin tool and the dashboard read it.
+
+    @staticmethod
+    def _triage_out(row: dict[str, Any]) -> dict[str, Any]:
+        def iso(value: float) -> str:
+            return datetime.fromtimestamp(value, timezone.utc).isoformat() if value else ""
+
+        return {**{key: value for key, value in row.items() if key != "event_seq"}, "created": iso(row["created"]), "finished": iso(row["finished"])}
+
+    @staticmethod
+    def _triage_status(value: Any) -> str:
+        if value not in TRIAGE_STATUSES:
+            raise RequestError(f"status must be one of {', '.join(TRIAGE_STATUSES)}")
+        return value
+
+    def op_triage_record(self, request: dict[str, Any]) -> dict[str, Any]:
+        entry = request.get("entry")
+        if not isinstance(entry, dict):
+            raise RequestError("entry must be a JSON object")
+        for key in ("account", "mail_id"):
+            if not isinstance(entry.get(key), str) or not entry[key]:
+                raise RequestError(f"entry.{key} is required")
+        self._triage_status(entry.get("status"))
+        seq = request.get("event_seq")
+        if seq is not None and not isinstance(seq, int):
+            raise RequestError("event_seq must be a number")
+        identifier = self.store.triage_record(entry, seq)
+        self.store.triage_prune(self.cfg.triage_retention_days)
+        return {"id": identifier}
+
+    def op_triage_update(self, request: dict[str, Any]) -> dict[str, Any]:
+        fields = request.get("fields")
+        if not isinstance(fields, dict):
+            raise RequestError("fields must be a JSON object")
+        if "status" in fields:
+            self._triage_status(fields["status"])
+        identifier = int(request.get("id"))
+        if not self.store.triage_update(identifier, fields):
+            raise RequestError(f"no triage entry {identifier}")
+        return {"id": identifier}
+
+    def op_triage_list(self, request: dict[str, Any]) -> dict[str, Any]:
+        status = str(request.get("status") or "")
+        if status:
+            self._triage_status(status)
+        since = datetime.fromisoformat(parse_time(request["since"])).timestamp() if request.get("since") else 0.0
+        rows = self.store.triage_query(
+            account=str(request.get("account") or ""), status=status, since=since, text=str(request.get("query") or ""),
+            mail_id=str(request.get("mail_id") or ""), limit=int(request.get("limit") or 50), offset=int(request.get("offset") or 0),
+        )
+        return {"count": len(rows), "entries": [self._triage_out(row) for row in rows],
+                "retention_days": self.cfg.triage_retention_days}
+
+    def op_triage_show(self, request: dict[str, Any]) -> dict[str, Any]:
+        row = self.store.triage_get(int(request.get("id")))
+        if row is None:
+            raise RequestError(f"no triage entry {request.get('id')}")
+        return self._triage_out(row)
+
+    def op_triage_retry(self, request: dict[str, Any]) -> dict[str, Any]:
+        """Queue a new mail.new event for the mail of a log entry, so the notifier handles the mail again."""
+        row = self.store.triage_get(int(request.get("id")))
+        if row is None:
+            raise RequestError(f"no triage entry {request.get('id')}")
+        if self.store.get(row["mail_id"]) is None:
+            raise RequestError("the mail is older than the sync window, so it cannot be processed again")
+        self.store.add_event("mail.new", row["account"], row["mail_id"], f"retry of triage entry {row['id']}")
+        return {"id": row["id"], "mail_id": row["mail_id"]}
 
     def op_ack(self, request: dict[str, Any]) -> dict[str, Any]:
         seqs = request.get("seqs")

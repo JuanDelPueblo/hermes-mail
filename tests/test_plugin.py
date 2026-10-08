@@ -103,6 +103,8 @@ class ToolTest(unittest.TestCase):
         self.service = FakeService(self.path, {
             "list": {"ok": True, "count": 1, "messages": [{"id": "uni.1", "subject": "Hi"}]},
             "export_attachment": {"ok": True, "path": "/exports/uni.1/0-a.pdf", "size": 3},
+            "triage_list": {"ok": True, "count": 1, "retention_days": 30, "entries": [{"id": 4, "subject": "Hi", "status": "silent"}]},
+            "triage_show": {"ok": True, "id": 4, "subject": "Hi", "status": "silent", "actions": []},
             "mark": {"ok": False, "error": "uni.2: message not found", "results": {"uni.2": {"ok": False, "error": "message not found"}}},
         })
         tools.configure(self.path)
@@ -123,6 +125,16 @@ class ToolTest(unittest.TestCase):
     def test_export_returns_media_line(self):
         result = json.loads(tools.mail_export_attachment({"mail_id": "uni.1", "index": 0}))
         self.assertEqual(result["media"], "MEDIA:/exports/uni.1/0-a.pdf")
+
+    def test_triage_log_lists_and_shows(self):
+        result = json.loads(tools.mail_triage_log({"status": "silent", "account": "", "since": "1d", "limit": 500}))
+        self.assertEqual(result["entries"][0]["id"], 4)
+        self.assertEqual(self.service.requests[-1], {"op": "triage_list", "status": "silent", "since": "1d", "limit": 200})
+        json.loads(tools.mail_triage_log({}))
+        self.assertEqual(self.service.requests[-1], {"op": "triage_list", "limit": 20})
+        result = json.loads(tools.mail_triage_log({"id": 4}))
+        self.assertEqual(result["status"], "silent")
+        self.assertEqual(self.service.requests[-1], {"op": "triage_show", "id": 4})
 
     def test_errors_keep_the_results(self):
         result = json.loads(tools.mail_mark_read({"mail_ids": ["uni.2"]}))
@@ -145,6 +157,17 @@ class FakeClient:
         self.exported: list[int] = []
         self.acked: list[int] = []
         self.queue: list[list[dict[str, Any]]] = []
+        self.log: dict[int, dict[str, Any]] = {}
+        self.log_updates: list[tuple[int, dict[str, Any]]] = []
+
+    def triage_record(self, entry: dict[str, Any], event_seq: int | None = None) -> int:
+        self._check("log")
+        self.log[event_seq] = entry
+        return event_seq
+
+    def triage_update(self, entry_id: int, fields: dict[str, Any]) -> None:
+        self.log_updates.append((entry_id, fields))
+        self.log[entry_id] = {**self.log[entry_id], **fields}
 
     def _check(self, name: str) -> None:
         if name in self.fail:
@@ -269,6 +292,75 @@ class NotifierTest(unittest.TestCase):
         notifier, accounts = self.make(decision(task=task), notify={"task_command": ["false"]})
         notifier.handle(EVENT, accounts)
         self.assertIn('Mail problem: task creation failed for "Homework 4"', self.sent[0][1])
+
+    def test_the_triage_log_has_the_decision_and_the_actions(self):
+        notifier, accounts = self.make(decision(attachments=[0, 7]))
+        notifier.handle(EVENT, accounts)
+        entry = self.client.log[1]
+        self.assertEqual((entry["status"], entry["decision"], entry["mode"], entry["account"]), ("notified", "notify", "triage", "uni"))
+        self.assertEqual((entry["subject"], entry["sender"], entry["mail_id"], entry["message_id"]),
+                         ("Homework 4", "Prof <p@x.edu>", "uni.abc", "<m@x>"))
+        self.assertEqual((entry["reason"], entry["summary"]), ("SECRET-REASONING", "Homework 4 is due on 2026-10-02."))
+        self.assertEqual(entry["attachments"], [0])
+        self.assertEqual(entry["actions"], [{"step": "export attachment 0", "ok": True}])
+        self.assertEqual(entry["error"], "")
+        self.assertNotIn("Submit homework 4", json.dumps(entry))
+        self.assertEqual(notifier.log_ids, {})
+
+    def test_the_triage_log_has_a_silent_decision_and_its_failures(self):
+        notifier, accounts = self.make(decision(decision="silent", summary="Newsletter.", attachments=[]), fail={"mark"})
+        notifier.handle(EVENT, accounts)
+        entry = self.client.log[1]
+        self.assertEqual((entry["status"], entry["error"]), ("silent", "mark read: mark is broken"))
+        self.assertEqual(entry["actions"], [{"step": "mark read", "ok": False, "detail": "mark is broken"}])
+        notifier, accounts = self.make(decision(decision="silent", summary="Newsletter.", attachments=[]))
+        notifier.handle(EVENT, accounts)
+        self.assertEqual(self.client.log[1]["actions"], [{"step": "mark read", "ok": True}])
+
+    def test_the_triage_log_has_a_triage_failure(self):
+        notifier, accounts = self.make(error=triage.TriageError("the model did not return JSON"))
+        notifier.handle(EVENT, accounts)
+        entry = self.client.log[1]
+        self.assertEqual(entry["status"], "error")
+        self.assertIn("triage: the model did not return JSON", entry["error"])
+
+    def test_the_triage_log_has_an_unreadable_mail(self):
+        notifier, accounts = self.make(fail={"show"})
+        notifier.handle(EVENT, accounts)
+        entry = self.client.log[1]
+        self.assertEqual((entry["status"], entry["mail_id"], entry["account"]), ("error", "uni.abc", "uni"))
+        self.assertIn("show is broken", entry["error"])
+
+    def test_the_log_has_the_all_mode(self):
+        notifier, accounts = self.make(notify={"mode": "all"})
+        notifier.handle(EVENT, accounts)
+        self.assertEqual((self.client.log[1]["mode"], self.client.log[1]["status"]), ("all", "notified"))
+        self.assertIn("Submit homework 4", self.client.log[1]["summary"])
+
+    def test_nothing_is_logged_for_mode_none_or_for_account_events(self):
+        notifier, accounts = self.make(notify={"mode": "none"})
+        notifier.handle(EVENT, accounts)
+        notifier.handle({**EVENT, "seq": 2, "kind": "mail.auth", "detail": "expired"}, accounts)
+        self.assertEqual(self.client.log, {})
+
+    def test_a_message_that_cannot_be_sent_is_marked_in_the_log(self):
+        notifier, accounts = self.make()
+
+        def broken(target, message):
+            raise triage.NotifyError("discord is down")
+
+        notifier.send = broken
+        for _ in range(triage.MAX_SEND_ATTEMPTS):
+            notifier.handle(EVENT, accounts)
+        [(entry_id, fields)] = self.client.log_updates
+        self.assertEqual((entry_id, fields["status"]), (1, "error"))
+        self.assertIn("discord is down", fields["error"])
+        self.assertEqual(notifier.log_ids, {})
+
+    def test_a_log_failure_does_not_stop_the_notification(self):
+        notifier, accounts = self.make(fail={"log"})
+        self.assertTrue(notifier.handle(EVENT, accounts))
+        self.assertEqual(len(self.sent), 1)
 
     def test_auth_event(self):
         notifier, accounts = self.make()
@@ -418,6 +510,9 @@ class DashboardTest(unittest.TestCase):
             "status": {"ok": True, "accounts": [{"name": "uni", "status": "idle", "error": "", "last_sync": ""}]},
             "folders": {"ok": True, "account": "uni", "archive_folder": "Archive", "synced": ["INBOX"],
                         "folders": [{"name": "INBOX", "special": "inbox"}, {"name": "Archive", "special": "archive"}]},
+            "triage_list": {"ok": True, "count": 1, "retention_days": 30, "entries": [{"id": 4, "subject": "Hi", "status": "silent"}]},
+            "triage_show": {"ok": True, "id": 4, "subject": "Hi", "status": "silent"},
+            "triage_retry": {"ok": True, "id": 4, "mail_id": "uni.abc"},
             "settings_save": {"ok": True, "account": "uni"},
             "settings_delete": {"ok": True, "account": "uni"},
         })
@@ -482,6 +577,16 @@ class DashboardTest(unittest.TestCase):
         self.assertEqual(self.hermes.settings["notify"], {})
         result = self.route("POST", "/accounts/{name}/reset")("uni")
         self.assertEqual(result, {"ok": False, "error": "unknown"})
+
+    def test_activity_is_the_triage_log_of_the_service(self):
+        result = self.route("GET", "/activity")(account="uni", status="silent", query="hi", since="", limit=500, offset=0)
+        self.assertEqual((result["ok"], result["entries"][0]["id"], result["retention_days"]), (True, 4, 30))
+        self.assertEqual(self.service.requests[-1], {"op": "triage_list", "account": "uni", "status": "silent", "query": "hi", "limit": 200, "offset": 0})
+        self.assertEqual(self.route("GET", "/activity/{entry_id}")(4)["entry"]["subject"], "Hi")
+        self.assertEqual(self.service.requests[-1], {"op": "triage_show", "id": 4})
+        self.assertEqual(self.route("POST", "/activity/{entry_id}/retry")(4), {"ok": True, "mail_id": "uni.abc"})
+        self.assertFalse(self.route("GET", "/activity")(account="../x", status="", query="", since="", limit=50, offset=0)["ok"])
+        self.assertFalse(self.route("GET", "/activity")(account="", status="great", query="", since="", limit=50, offset=0)["ok"])
 
     def test_folders_come_from_the_service(self):
         result = self.route("GET", "/accounts/{name}/folders")("uni")

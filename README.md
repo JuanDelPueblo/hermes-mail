@@ -74,6 +74,8 @@ shows every key:
 - `export_dir`: where `export-attachment` saves files.
 - `extract_root`: `extract-attachment` writes only below this directory.
   `null` turns the command off.
+- `triage_retention_days`: how many days the triage log is kept. The default
+  is 30, and `0` keeps it for ever.
 - `web_settings`: let the Mail tab of the Hermes dashboard change the
   accounts. The default is `true`.
 - `accounts.<name>`: `provider`, `address`, `auth`, `host`, `port`,
@@ -168,6 +170,9 @@ hermes-mail export-attachment <mail-id> <index>
 hermes-mail mark-read <mail-id> [<mail-id> ...]
 hermes-mail mark-unread <mail-id> [<mail-id> ...]
 hermes-mail archive <mail-id> [<mail-id> ...]
+hermes-mail triage-log [--account A] [--status S] [--since 2d] [--query text]
+hermes-mail triage-show <entry-id>
+hermes-mail triage-retry <entry-id>
 hermes-mail events
 ```
 
@@ -204,6 +209,26 @@ To test the triage of one message without any change:
 ```sh
 hermes mail triage <mail-id>
 ```
+
+### Activity log
+
+The notifier writes one entry in the triage log for each new message it
+handles in `triage` or `all` mode: the account, the subject and the sender,
+the decision (`notified`, `silent` or `error`), the reason, the summary, each
+action with its result (mark read, attachment exports, the task command) and
+any error. The log is in the service, so you can read it without a chat:
+
+- The Activity section of the Mail tab lists the entries with filters, shows
+  the details of each, and has a "Process again" button that queues the mail
+  for the notifier again.
+- `hermes-mail triage-log`, `triage-show` and `triage-retry` do the same on
+  the command line.
+- The `mail_triage_log` tool lets the agent answer "what happened to that
+  mail?" in any chat.
+
+The log never holds the mail text. It keeps `triage_retention_days` days (30
+by default), and an entry stays readable after its mail leaves the sync
+window, but "Process again" needs the mail to be in the index.
 
 ### Task command
 

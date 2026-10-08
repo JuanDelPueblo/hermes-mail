@@ -187,6 +187,8 @@ class Notifier:
         # A message that failed to send. A retry sends it again, and does not
         # run the triage, the export or the task command a second time.
         self.unsent: Dict[int, tuple] = {}
+        # The triage log entry of each event that is still open.
+        self.log_ids: Dict[int, int] = {}
 
     def accounts(self) -> Dict[str, Any]:
         """The service accounts, with the `notify` plugin setting in place of
@@ -223,6 +225,8 @@ class Notifier:
                 message = self._message(event, notify)
             except MailServiceError as error:
                 message = problem("reading the mail", event.get("mail_id", ""), error) if target else None
+                if event.get("kind") == "mail.new" and notify.get("mode", "none") != "none":
+                    self._log(event, {}, mode=notify["mode"], status="error", error=f"reading the mail: {error}")
             if message is None or not target:
                 return True
         try:
@@ -232,6 +236,7 @@ class Notifier:
             log.warning("event %s: send to %s failed (attempt %d): %s", seq, target, self.attempts[seq], error)
             if self.attempts[seq] >= MAX_SEND_ATTEMPTS:
                 log.error("event %s: dropped after %d failed sends", seq, self.attempts[seq])
+                self._log_failure(seq, f"the message was not sent after {self.attempts[seq]} tries: {error}")
                 self._forget(seq)
                 return True
             self.unsent[seq] = (target, message)
@@ -242,6 +247,28 @@ class Notifier:
     def _forget(self, seq: int) -> None:
         self.attempts.pop(seq, None)
         self.unsent.pop(seq, None)
+        self.log_ids.pop(seq, None)
+
+    def _log(self, event: Dict[str, Any], mail: Dict[str, Any], **fields: Any) -> None:
+        """Write the entry of this event in the triage log. A log failure never stops a notification."""
+        entry = {
+            "account": event["account"], "mail_id": event.get("mail_id") or mail.get("id") or "",
+            "message_id": mail.get("message_id") or "", "subject": mail.get("subject") or "",
+            "sender": mail.get("sender") or "", "mail_date": mail.get("date") or "", **fields,
+        }
+        try:
+            self.log_ids[int(event["seq"])] = self.client.triage_record(entry, int(event["seq"]))
+        except MailServiceError as error:
+            log.warning("event %s: cannot write the triage log: %s", event.get("seq"), error)
+
+    def _log_failure(self, seq: int, error: str) -> None:
+        entry = self.log_ids.get(seq)
+        if entry is None:
+            return
+        try:
+            self.client.triage_update(entry, {"status": "error", "error": error})
+        except MailServiceError as failure:
+            log.warning("event %s: cannot update the triage log: %s", seq, failure)
 
     def retry_delay(self, seq: int) -> float:
         """Seconds to wait before the next send attempt: 5 s, doubled each time, at most 10 minutes."""
@@ -264,25 +291,38 @@ class Notifier:
         subject = mail.get("subject") or "(no subject)"
         if mode == "all":
             preview = " ".join(str(mail.get("body") or "").split())[:600]
+            self._log(event, mail, mode=mode, status="notified", decision="notify", summary=preview)
             return f"{header(mail)}\n\n{preview}\n{footer(mail)}"
 
         problems: List[str] = []
+        errors: List[str] = []
+        actions: List[Dict[str, Any]] = []
+
+        def failed(step: str, error: Any) -> None:
+            problems.append(problem(step, subject, error))
+            errors.append(f"{step}: {error}")
+            actions.append({"step": step, "ok": False, "detail": str(error)})
+
         if mail.get("body_error"):
-            problems.append(problem("reading the full text", subject, mail["body_error"]))
+            failed("reading the full text", mail["body_error"])
         try:
             decision = self.triage(mail, notify)
         except Exception as error:  # noqa: BLE001 - report every triage failure
             log.warning("mail %s: triage failed: %s", mail.get("id"), error)
-            problems.append(problem("triage", subject, error))
+            failed("triage", error)
+            self._log(event, mail, mode=mode, status="error", error="; ".join(errors), actions=actions)
             return "\n".join([header(mail), "", *problems, footer(mail)])
         log.info("mail %s: %s (%s)", mail.get("id"), decision["decision"], decision["reason"])
+        entry = {"mode": mode, "decision": decision["decision"], "reason": decision["reason"], "summary": decision["summary"]}
 
         if decision["decision"] == "silent":
             if notify.get("mark_read_silent") and not mail.get("read"):
                 try:
                     self.client.mark([mail["id"]], True)
+                    actions.append({"step": "mark read", "ok": True})
                 except MailServiceError as error:
-                    problems.append(problem("mark read", subject, error))
+                    failed("mark read", error)
+            self._log(event, mail, status="silent", error="; ".join(errors), actions=actions, **entry)
             return "\n".join(problems) if problems else None
 
         lines = [header(mail), "", decision["summary"]]
@@ -292,19 +332,24 @@ class Notifier:
                        "subject": mail.get("subject"), "sender": mail.get("sender"), "account": mail.get("account")}
             try:
                 result = self.run_task(list(notify["task_command"]), payload)
+                actions.append({"step": "task command", "ok": True, "detail": result})
                 if result:
                     lines.append(f"Task: {result}")
             except NotifyError as error:
-                problems.append(problem("task creation", subject, error))
+                failed("task creation", error)
         media: List[str] = []
+        sent_attachments: List[int] = []
         valid = {item.get("index") for item in mail.get("attachments") or []}
         for index in decision["attachments"]:
             if index not in valid:
                 continue
             try:
                 media.append("MEDIA:" + self.client.export_attachment(mail["id"], index)["path"])
+                sent_attachments.append(index)
+                actions.append({"step": f"export attachment {index}", "ok": True})
             except MailServiceError as error:
-                problems.append(problem(f"attachment {index} export", subject, error))
+                failed(f"attachment {index} export", error)
+        self._log(event, mail, status="notified", error="; ".join(errors), actions=actions, attachments=sent_attachments, **entry)
         return "\n".join([*lines, *problems, footer(mail), *media])
 
     def run(self, stop: Optional[threading.Event] = None, wait: float = 60.0) -> None:

@@ -2,6 +2,7 @@
   "state_dir": "/var/lib/hermes-mail",
   "socket": "/run/hermes-mail/mail.sock",
   "web_settings": true,
+  "triage_retention_days": 30,
   "export_dir": "/var/lib/hermes-mail/exports",
   "extract_root": null,
   "accounts": {

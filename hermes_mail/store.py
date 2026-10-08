@@ -50,11 +50,44 @@ CREATE TABLE IF NOT EXISTS events (
     created REAL NOT NULL,
     done INTEGER NOT NULL DEFAULT 0
 );
+CREATE TABLE IF NOT EXISTS triage (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    event_seq INTEGER UNIQUE,
+    run_id TEXT NOT NULL DEFAULT '',
+    account TEXT NOT NULL,
+    mail_id TEXT NOT NULL,
+    message_id TEXT NOT NULL DEFAULT '',
+    subject TEXT NOT NULL DEFAULT '',
+    sender TEXT NOT NULL DEFAULT '',
+    mail_date TEXT NOT NULL DEFAULT '',
+    mode TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL,
+    decision TEXT NOT NULL DEFAULT '',
+    reason TEXT NOT NULL DEFAULT '',
+    summary TEXT NOT NULL DEFAULT '',
+    actions TEXT NOT NULL DEFAULT '[]',
+    attachments TEXT NOT NULL DEFAULT '[]',
+    error TEXT NOT NULL DEFAULT '',
+    created REAL NOT NULL,
+    finished REAL NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS triage_created ON triage (created);
 """
 
 # Index columns that list and search return. The parts and the preview stay
 # out of lists to keep them small.
 SUMMARY = ("id", "account", "folder", "message_id", "date", "sender", "recipients", "cc", "subject", "read", "flagged", "size")
+
+
+# The log of the processed mail. `event_seq` is unique, so a notifier that
+# handles an event again updates the row and does not add a second one.
+TRIAGE_STATUSES = ("dispatched", "notified", "silent", "error", "no_report")
+TRIAGE_TEXT = ("run_id", "account", "mail_id", "message_id", "subject", "sender", "mail_date", "mode", "status",
+               "decision", "reason", "summary", "error")
+TRIAGE_JSON = ("actions", "attachments")
+TRIAGE_UPDATABLE = ("status", "decision", "reason", "summary", "error", "actions", "attachments")
+# The log keeps the summary and the actions, never the text of the mail.
+TRIAGE_FIELD_LIMIT = 8000
 
 
 def mail_id(account: str, folder: str, uidvalidity: int, uid: int) -> str:
@@ -226,6 +259,89 @@ class Store:
             # Keep one week of finished events for diagnosis.
             self._write("DELETE FROM events WHERE done=1 AND created<?", (time.time() - 7 * 86400,))
         return count
+
+    # Triage log
+
+    @staticmethod
+    def _triage_row(row: sqlite3.Row) -> dict[str, Any]:
+        record = dict(row)
+        for key in TRIAGE_JSON:
+            record[key] = json.loads(record[key])
+        return record
+
+    @staticmethod
+    def _triage_values(fields: dict[str, Any]) -> dict[str, Any]:
+        values: dict[str, Any] = {}
+        for key in TRIAGE_TEXT:
+            if key in fields:
+                values[key] = str(fields[key] if fields[key] is not None else "")[:TRIAGE_FIELD_LIMIT]
+        for key in TRIAGE_JSON:
+            if key in fields:
+                values[key] = json.dumps(fields[key] if fields[key] is not None else [], ensure_ascii=False)[:TRIAGE_FIELD_LIMIT * 4]
+        return values
+
+    def triage_record(self, fields: dict[str, Any], event_seq: int | None = None) -> int:
+        """Add a row to the triage log, or update the row of the same event. Return its ID."""
+        values = self._triage_values(fields)
+        now = time.time()
+        with self._lock:
+            if event_seq is not None:
+                rows = self._rows("SELECT id FROM triage WHERE event_seq=?", (event_seq,))
+                if rows:
+                    identifier = rows[0]["id"]
+                    self.triage_update(identifier, {key: value for key, value in fields.items() if key in TRIAGE_UPDATABLE})
+                    return identifier
+            columns = ["event_seq", "created", "finished", *values]
+            finished = now if values.get("status") not in (None, "dispatched") else 0.0
+            self._write(
+                f"INSERT INTO triage ({', '.join(columns)}) VALUES ({', '.join('?' * len(columns))})",
+                (event_seq, now, finished, *values.values()),
+            )
+            return self._rows("SELECT last_insert_rowid() AS id")[0]["id"]
+
+    def triage_update(self, identifier: int, fields: dict[str, Any]) -> bool:
+        values = self._triage_values({key: value for key, value in fields.items() if key in TRIAGE_UPDATABLE})
+        if not values:
+            return bool(self._rows("SELECT 1 FROM triage WHERE id=?", (identifier,)))
+        assignments = [f"{key}=?" for key in values]
+        args: list[Any] = list(values.values())
+        if values.get("status") not in (None, "dispatched"):
+            assignments.append("finished=?")
+            args.append(time.time())
+        return self._write(f"UPDATE triage SET {', '.join(assignments)} WHERE id=?", (*args, identifier)) > 0
+
+    def triage_get(self, identifier: int) -> dict[str, Any] | None:
+        rows = self._rows("SELECT * FROM triage WHERE id=?", (identifier,))
+        return self._triage_row(rows[0]) if rows else None
+
+    def triage_query(
+        self, *, account: str = "", status: str = "", since: float = 0.0, text: str = "", mail_id: str = "",
+        limit: int = 50, offset: int = 0,
+    ) -> list[dict[str, Any]]:
+        clauses, args = [], []
+        for column, value in (("account", account), ("status", status), ("mail_id", mail_id)):
+            if value:
+                clauses.append(f"{column}=?")
+                args.append(value)
+        if since:
+            clauses.append("created>=?")
+            args.append(since)
+        if text:
+            pattern = "%" + text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
+            clauses.append("(sender LIKE ? ESCAPE '\\' OR subject LIKE ? ESCAPE '\\' OR summary LIKE ? ESCAPE '\\')")
+            args += [pattern, pattern, pattern]
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        rows = self._rows(
+            f"SELECT * FROM triage {where} ORDER BY id DESC LIMIT ? OFFSET ?",
+            (*args, max(1, min(limit, 500)), max(0, offset)),
+        )
+        return [self._triage_row(row) for row in rows]
+
+    def triage_prune(self, days: int) -> int:
+        """Delete the log rows that are older than `days`. 0 keeps every row."""
+        if days <= 0:
+            return 0
+        return self._write("DELETE FROM triage WHERE created<?", (time.time() - days * 86400,))
 
     # Part cache
 

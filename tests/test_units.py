@@ -168,6 +168,13 @@ class ConfigTest(unittest.TestCase):
         overridden = config.parse(self.base(archive_folder="Old Mail")).accounts["uni"]
         self.assertEqual(overridden.archive_folder, "Old Mail")
 
+    def test_triage_retention(self):
+        self.assertEqual(config.parse(self.base()).triage_retention_days, 30)
+        self.assertEqual(config.parse({**self.base(), "triage_retention_days": 0}).triage_retention_days, 0)
+        for value in (-1, 4000):
+            with self.assertRaisesRegex(config.ConfigError, "triage_retention_days"):
+                config.parse({**self.base(), "triage_retention_days": value})
+
     def test_errors(self):
         for account, message in [
             ({"provider": "yahoo"}, "provider"),

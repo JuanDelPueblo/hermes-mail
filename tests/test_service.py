@@ -78,13 +78,15 @@ class ServiceTest(unittest.TestCase):
         self.tokens.close()
         self.tmp.cleanup()
 
-    def make_service(self, *, signed_in: bool = True, extract: bool = True, web_settings: bool = True, **account) -> Service:
+    def make_service(self, *, signed_in: bool = True, extract: bool = True, web_settings: bool = True, retention: int | None = None,
+                     **account) -> Service:
         self.raw = raw = {
             "state_dir": str(self.root / "state"),
             "socket": str(self.root / "mail.sock"),
             "export_dir": str(self.root / "exports"),
             "extract_root": str(self.root / "home") if extract else None,
             "web_settings": web_settings,
+            **({} if retention is None else {"triage_retention_days": retention}),
             "accounts": {"uni": {"provider": "microsoft", "address": USER, "poll_seconds": 30, **account}},
         }
         cfg = config.parse(raw)
@@ -216,6 +218,84 @@ class ServiceTest(unittest.TestCase):
         commands = [command.split(" ", 1)[1].upper() for command in self.box.commands[before:]]
         self.assertTrue(any(command.startswith("LIST") for command in commands))
         self.assertFalse(any(command.startswith(("SELECT", "UID", "STORE", "CLOSE", "EXPUNGE")) for command in commands))
+
+    def test_triage_log_records_updates_and_lists(self):
+        service = self.make_service()
+        entry = {"account": "uni", "mail_id": "uni.abc", "message_id": "<m@x>", "subject": "Exam moved", "sender": "Prof <p@x.edu>",
+                 "mode": "triage", "status": "notified", "decision": "notify", "reason": "A person wrote to the owner.",
+                 "summary": "The exam moved to Monday.", "actions": [{"step": "export attachment 0", "ok": True}], "attachments": [0]}
+        first = self.call(service, op="triage_record", entry=entry, event_seq=7)["id"]
+        # The same event again updates the row. It adds no second row.
+        again = self.call(service, op="triage_record", entry={**entry, "status": "error", "error": "send failed"}, event_seq=7)["id"]
+        self.assertEqual(first, again)
+        other = self.call(service, op="triage_record", entry={**entry, "mail_id": "uni.def", "subject": "Newsletter", "status": "silent",
+                                                               "decision": "silent", "summary": "Weekly 100% news"}, event_seq=8)["id"]
+        listed = self.call(service, op="triage_list")
+        self.assertEqual([item["id"] for item in listed["entries"]], [other, first])
+        shown = self.call(service, op="triage_show", id=first)
+        self.assertEqual((shown["status"], shown["error"], shown["actions"], shown["attachments"]),
+                         ("error", "send failed", [{"step": "export attachment 0", "ok": True}], [0]))
+        self.assertTrue(shown["finished"] and shown["created"])
+        self.assertNotIn("event_seq", shown)
+        self.assertEqual([item["id"] for item in self.call(service, op="triage_list", status="silent")["entries"]], [other])
+        self.assertEqual([item["id"] for item in self.call(service, op="triage_list", query="100%")["entries"]], [other])
+        self.assertEqual([item["id"] for item in self.call(service, op="triage_list", query="exam")["entries"]], [first])
+        self.assertEqual(self.call(service, op="triage_list", since="1h")["count"], 2)
+        self.assertEqual(self.call(service, op="triage_list", account="nope")["count"], 0)
+        self.call(service, op="triage_update", id=first, fields={"status": "notified", "error": ""})
+        self.assertEqual(self.call(service, op="triage_show", id=first)["status"], "notified")
+
+    def test_triage_log_keeps_a_dispatched_row_open_until_it_finishes(self):
+        service = self.make_service()
+        entry = {"account": "uni", "mail_id": "uni.abc", "mode": "agent", "status": "dispatched"}
+        identifier = self.call(service, op="triage_record", entry=entry)["id"]
+        self.assertEqual(self.call(service, op="triage_show", id=identifier)["finished"], "")
+        self.call(service, op="triage_update", id=identifier, fields={"status": "no_report", "error": "no answer"})
+        self.assertTrue(self.call(service, op="triage_show", id=identifier)["finished"])
+
+    def test_triage_log_refuses_bad_requests(self):
+        service = self.make_service()
+        good = {"account": "uni", "mail_id": "uni.abc", "status": "silent"}
+        for request in (
+            {"op": "triage_record", "entry": "text"},
+            {"op": "triage_record", "entry": {**good, "status": "great"}},
+            {"op": "triage_record", "entry": {"status": "silent", "account": "uni"}},
+            {"op": "triage_record", "entry": good, "event_seq": "one"},
+            {"op": "triage_update", "id": 99, "fields": {"status": "silent"}},
+            {"op": "triage_update", "id": 1, "fields": {"status": "great"}},
+            {"op": "triage_show", "id": 99},
+            {"op": "triage_list", "status": "great"},
+            {"op": "triage_retry", "id": 99},
+        ):
+            with self.subTest(request=request):
+                self.assertFalse(service.handle(request)["ok"])
+
+    def test_triage_log_is_pruned_after_the_retention_time(self):
+        service = self.make_service(retention=None)
+        old = self.call(service, op="triage_record", entry={"account": "uni", "mail_id": "uni.old", "status": "silent"})["id"]
+        service.store._write("UPDATE triage SET created=? WHERE id=?", (time.time() - 31 * 86400, old))
+        recent = self.call(service, op="triage_record", entry={"account": "uni", "mail_id": "uni.new", "status": "silent"})["id"]
+        self.assertEqual([item["id"] for item in self.call(service, op="triage_list")["entries"]], [recent])
+        self.assertEqual(self.call(service, op="triage_list")["retention_days"], 30)
+
+    def test_triage_retention_zero_keeps_everything(self):
+        service = self.make_service(retention=0)
+        old = self.call(service, op="triage_record", entry={"account": "uni", "mail_id": "uni.old", "status": "silent"})["id"]
+        service.store._write("UPDATE triage SET created=? WHERE id=?", (time.time() - 400 * 86400, old))
+        self.call(service, op="triage_record", entry={"account": "uni", "mail_id": "uni.new", "status": "silent"})
+        self.assertEqual(self.call(service, op="triage_list")["count"], 2)
+
+    def test_triage_retry_queues_a_new_event_for_mail_in_the_index(self):
+        service = self.start()
+        homework = self.call(service, op="list", query="Homework")["messages"][0]
+        identifier = self.call(service, op="triage_record", entry={"account": "uni", "mail_id": homework["id"], "status": "silent"})["id"]
+        self.call(service, op="triage_retry", id=identifier)
+        [event] = self.call(service, op="events")["events"]
+        self.assertEqual((event["kind"], event["mail_id"], event["account"]), ("mail.new", homework["id"], "uni"))
+        gone = self.call(service, op="triage_record", entry={"account": "uni", "mail_id": "uni.0000000000000000", "status": "silent"})["id"]
+        refused = service.handle({"op": "triage_retry", "id": gone})
+        self.assertFalse(refused["ok"])
+        self.assertIn("sync window", refused["error"])
 
     def test_folders_rejects_an_unknown_account(self):
         service = self.start()
