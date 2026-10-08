@@ -241,6 +241,44 @@ def reset_notify(name: str) -> Dict[str, Any]:
     return _answer(reset)
 
 
+STATUSES = ("notified", "silent", "error", "dispatched", "no_report")
+
+
+@router.get("/activity")
+def activity(account: str = "", status: str = "", query: str = "", since: str = "", limit: int = 50, offset: int = 0) -> Dict[str, Any]:
+    """The triage log, newest first."""
+    def read() -> Dict[str, Any]:
+        if account:
+            _account(account)
+        if status and status not in STATUSES:
+            raise MailError(f"status must be one of {', '.join(STATUSES)}")
+        fields = {"account": account, "status": status, "query": query, "since": since,
+                  "limit": max(1, min(limit, 200)), "offset": max(0, offset)}
+        response = _call("triage_list", **{key: value for key, value in fields.items() if value not in ("", None)})
+        return {key: response[key] for key in ("entries", "count", "retention_days")}
+
+    return _answer(read)
+
+
+@router.get("/activity/{entry_id}")
+def activity_entry(entry_id: int) -> Dict[str, Any]:
+    def read() -> Dict[str, Any]:
+        response = _call("triage_show", id=entry_id)
+        return {"entry": {key: value for key, value in response.items() if key != "ok"}}
+
+    return _answer(read)
+
+
+@router.post("/activity/{entry_id}/retry")
+def retry_activity(entry_id: int) -> Dict[str, Any]:
+    """Queue the mail of a log entry for the notifier again."""
+    def retry() -> Dict[str, Any]:
+        response = _call("triage_retry", id=entry_id)
+        return {"mail_id": response["mail_id"]}
+
+    return _answer(retry)
+
+
 @router.post("/triage")
 def save_triage(body: Dict[str, Any]) -> Dict[str, Any]:
     def save() -> None:

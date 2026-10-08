@@ -18,6 +18,7 @@ provides_tools:
   - mail_mark_read
   - mail_mark_unread
   - mail_archive
+  - mail_triage_log
 config_schema:
   socket:
     type: str

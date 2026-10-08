@@ -157,6 +157,7 @@ let
     state_dir = cfg.stateDir;
     socket = socketPath;
     web_settings = cfg.webSettings;
+    triage_retention_days = cfg.triageRetentionDays;
     export_dir = cfg.exportDir;
     extract_root = cfg.extractRoot;
     accounts = lib.mapAttrs (_: account: {
@@ -264,6 +265,16 @@ in
       ];
       default = "INFO";
       description = "The log level of the service.";
+    };
+
+    triageRetentionDays = mkOption {
+      type = types.ints.between 0 3650;
+      default = 30;
+      description = ''
+        How many days the service keeps the triage log, the list of the mail
+        that the notifier processed. `0` keeps it for ever. The log holds the
+        subject, the sender, the summary and the actions, never the mail text.
+      '';
     };
 
     webSettings = mkOption {

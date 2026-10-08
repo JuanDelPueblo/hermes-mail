@@ -445,6 +445,126 @@
           h("div", null, h(Button, { size: "sm", onClick: save, disabled: form.busy }, "Save triage model")))));
   }
 
+  const ALL = "__all__";
+  const STATUS_LABELS = { notified: "Notified", silent: "Silent", error: "Error", dispatched: "Running", no_report: "No report" };
+  const STATUS_TONES = { notified: "success", silent: "secondary", error: "destructive", dispatched: "outline", no_report: "destructive" };
+  const PAGE = 50;
+
+  function ActivityEntry(props) {
+    const entry = props.entry;
+    const [open, setOpen] = useState(false);
+    const [confirm, setConfirm] = useState(false);
+    const [busy, setBusy] = useState(false);
+    const [error, setError] = useState(null);
+    const [queued, setQueued] = useState(false);
+
+    function again() {
+      setBusy(true);
+      setError(null);
+      post("/activity/" + entry.id + "/retry").then(function () {
+        setQueued(true);
+        setConfirm(false);
+        setBusy(false);
+        props.onQueued();
+      }, function (err) {
+        setError(err.message);
+        setBusy(false);
+      });
+    }
+
+    const actions = entry.actions || [];
+    const time = entry.created ? new Date(entry.created).toLocaleString() : "";
+    return h("div", { className: "flex flex-col gap-2 border border-midground/15 p-3" },
+      h("button", {
+        type: "button", className: "flex flex-wrap items-center gap-2 text-left",
+        onClick: function () { setOpen(!open); }, "aria-expanded": open,
+      },
+        h(Badge, { tone: STATUS_TONES[entry.status] || "outline" }, STATUS_LABELS[entry.status] || entry.status),
+        h(Badge, { tone: "outline" }, entry.account),
+        h("span", { className: "text-sm font-medium" }, entry.subject || "(no subject)"),
+        h("span", { className: "text-xs text-muted-foreground" }, entry.sender || ""),
+        h("span", { className: "ml-auto text-xs text-muted-foreground" }, time)),
+      !open && entry.error ? h("p", { className: "text-xs text-destructive" }, entry.error) : null,
+      open ? h("div", { className: "flex flex-col gap-3 text-sm" },
+        entry.summary ? h("p", { className: "whitespace-pre-wrap" }, entry.summary) : null,
+        entry.reason ? h("p", { className: "text-xs text-muted-foreground" }, "Reason: " + entry.reason) : null,
+        entry.error ? h("p", { className: "text-xs text-destructive" }, entry.error) : null,
+        actions.length ? h("ul", { className: "flex flex-col gap-1 text-xs" }, actions.map(function (action, index) {
+          return h("li", { key: index, className: action.ok ? "" : "text-destructive" },
+            (action.ok ? "Done: " : "Failed: ") + action.step + (action.detail ? " (" + action.detail + ")" : ""));
+        })) : null,
+        h("p", { className: "text-xs text-muted-foreground" },
+          ["Mode: " + (entry.mode || "-"), "Mail: " + entry.mail_id, entry.mail_date ? "Received: " + new Date(entry.mail_date).toLocaleString() : ""]
+            .filter(Boolean).join(" · ")),
+        queued ? h("p", { className: "text-xs text-muted-foreground" }, "Queued. The notifier adds a new entry when it has handled the mail.") : null,
+        h(ErrorText, { text: error }),
+        h("div", { className: "flex flex-wrap items-center gap-2" },
+          confirm
+            ? [h("span", { key: "ask", className: "text-xs text-muted-foreground" }, "The notifier will triage, mark and notify again."),
+              h(Button, { key: "yes", size: "sm", onClick: again, disabled: busy }, "Process again"),
+              h(Button, { key: "no", size: "sm", outlined: true, onClick: function () { setConfirm(false); }, disabled: busy }, "Cancel")]
+            : h(Button, { size: "sm", outlined: true, onClick: function () { setConfirm(true); setQueued(false); } }, "Process again"))) : null);
+  }
+
+  // The triage log: what the notifier did with each new message.
+  function ActivityCard(props) {
+    const [filters, setFilters] = useState({ account: ALL, status: ALL, query: "" });
+    const [query, setQuery] = useState("");
+    const [limit, setLimit] = useState(PAGE);
+    const [result, setResult] = useState(null);
+    const [error, setError] = useState(null);
+
+    const load = useCallback(function () {
+      const params = new URLSearchParams({ limit: String(limit) });
+      if (filters.account !== ALL) params.set("account", filters.account);
+      if (filters.status !== ALL) params.set("status", filters.status);
+      if (filters.query) params.set("query", filters.query);
+      return SDK.fetchJSON(API + "/activity?" + params.toString()).then(function (data) {
+        if (!data.ok) throw new Error(data.error);
+        setResult(data);
+        setError(null);
+      }).catch(function (err) { setError(err.message || String(err)); });
+    }, [filters, limit]);
+
+    useEffect(function () {
+      load();
+      const timer = setInterval(load, 30000);
+      return function () { clearInterval(timer); };
+    }, [load]);
+
+    function change(key) {
+      return function (value) {
+        setLimit(PAGE);
+        setFilters(function (current) { return Object.assign({}, current, { [key]: value }); });
+      };
+    }
+
+    const accounts = [[ALL, "All accounts"]].concat(props.accounts.map(function (name) { return [name, name]; }));
+    const statuses = [[ALL, "Any status"]].concat(Object.keys(STATUS_LABELS).map(function (key) { return [key, STATUS_LABELS[key]]; }));
+    const entries = result ? result.entries : [];
+
+    return h(Card, null,
+      h(CardHeader, null,
+        h("div", { className: "flex flex-wrap items-start justify-between gap-2" },
+          h("div", { className: "flex flex-col gap-1" },
+            h(CardTitle, null, "Activity"),
+            h("p", { className: "text-xs text-muted-foreground" },
+              "What the notifier did with new mail." + (result && result.retention_days ? " The log keeps " + result.retention_days + " days." : ""))),
+          h(Button, { size: "sm", outlined: true, onClick: load }, "Refresh"))),
+      h(CardContent, null,
+        h("div", { className: "flex flex-col gap-4" },
+          h("div", { className: "grid grid-cols-1 gap-4 md:grid-cols-3" },
+            h(ChoiceField, { label: "Account", value: filters.account, onChange: change("account"), options: accounts }),
+            h(ChoiceField, { label: "Status", value: filters.status, onChange: change("status"), options: statuses }),
+            h(TextField, { label: "Search", value: query, onChange: setQuery, placeholder: "Subject, sender or summary" })),
+          h("div", null, h(Button, { size: "sm", outlined: true, onClick: function () { change("query")(query.trim()); } }, "Search")),
+          h(ErrorText, { text: error }),
+          !result && !error ? h("p", { className: "text-sm text-muted-foreground" }, "Loading…") : null,
+          result && !entries.length ? h("p", { className: "text-sm text-muted-foreground" }, "Nothing yet. The notifier adds an entry for each new message of an account with notifications.") : null,
+          entries.map(function (entry) { return h(ActivityEntry, { key: entry.id, entry: entry, onQueued: function () { setTimeout(load, 5000); } }); }),
+          result && result.count >= limit ? h("div", null, h(Button, { size: "sm", outlined: true, onClick: function () { setLimit(limit + PAGE); } }, "Show more")) : null)));
+  }
+
   function MailPage() {
     const [data, setData] = useState(null);
     const [error, setError] = useState(null);
@@ -522,7 +642,10 @@
           onChanged: changed, onError: failed, onRemove: setRemoving,
         });
       }) : null,
-      data ? h(TriageCard, { key: "triage:" + generation, triage: data.triage, onChanged: changed }) : null);
+      data ? h(TriageCard, { key: "triage:" + generation, triage: data.triage, onChanged: changed }) : null,
+      data ? h(ActivityCard, {
+        accounts: data.accounts.filter(function (account) { return !account.removed; }).map(function (account) { return account.name; }),
+      }) : null);
   }
 
   window.__HERMES_PLUGINS__.register("hermes-mail", MailPage);

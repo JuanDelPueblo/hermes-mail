@@ -123,6 +123,13 @@ Each account has a notification policy:
 - `markReadSilent`: mark mail as read when the triage says `silent`.
 - `taskCommand`: an optional command for a task, for example a To Do helper.
 
+Every handled event also writes an entry in the triage log of the service
+(the `triage` table of the index, 30 days by default): the decision, the
+reason, the summary, the actions and the errors, but never the mail text. The
+Mail tab, `hermes-mail triage-log` and the `mail_triage_log` tool read it, so
+the owner can see what the plugin did with a message without any chat
+gateway. If the log cannot be written, the notification still goes out.
+
 A later version can add a daily digest of silent mail. Questions about a mail
 in the chat use the normal agent with the plugin tools. `hermes mail triage
 <mail-id>` prints the triage result of one message and changes nothing.

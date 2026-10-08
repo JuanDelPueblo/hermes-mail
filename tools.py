@@ -101,6 +101,21 @@ ARCHIVE = _schema(
     {"mail_ids": MAIL_IDS},
     ["mail_ids"],
 )
+TRIAGE_LOG = _schema(
+    "mail_triage_log",
+    "Show what the mail notifier did with new mail, newest first: for each message the decision (notified or "
+    "silent), the reason, the summary, the actions it took and any error. Give `id` to show one entry in full. "
+    "The log keeps only a few weeks and never holds the mail text.",
+    {
+        "id": {"type": "integer", "minimum": 1, "description": "One log entry, as in the id of a list result."},
+        "account": _string("Only this account. Empty means all accounts."),
+        "status": {"type": "string", "enum": ["notified", "silent", "error", "dispatched", "no_report"],
+                   "description": "Only entries with this status."},
+        "since": _string("Only entries after this time: 2d, 12h, yesterday or an ISO date."),
+        "query": _string("Text in the subject, the sender or the summary."),
+        "limit": {"type": "integer", "minimum": 1, "maximum": 200, "description": "The maximum number of entries (default 20)."},
+    },
+)
 
 
 def _filters(args: Dict[str, Any]) -> Dict[str, Any]:
@@ -147,6 +162,14 @@ def mail_archive(args: Dict[str, Any], **_: Any) -> str:
     return _reply(lambda: client().archive([str(item) for item in args.get("mail_ids") or []]))
 
 
+def mail_triage_log(args: Dict[str, Any], **_: Any) -> str:
+    if args.get("id") not in (None, ""):
+        return _reply(lambda: client().triage_show(int(args["id"])))
+    filters = {key: args.get(key) for key in ("account", "status", "since", "query") if args.get(key) not in (None, "")}
+    filters["limit"] = min(int(args.get("limit") or 20), 200)
+    return _reply(lambda: client().triage_list(**filters))
+
+
 TOOLS = [
     ("mail_status", STATUS, mail_status, "📬"),
     ("mail_list", LIST, mail_list, "📬"),
@@ -157,4 +180,5 @@ TOOLS = [
     ("mail_mark_read", MARK_READ, mail_mark_read, "✅"),
     ("mail_mark_unread", MARK_UNREAD, mail_mark_unread, "✉️"),
     ("mail_archive", ARCHIVE, mail_archive, "🗄️"),
+    ("mail_triage_log", TRIAGE_LOG, mail_triage_log, "🗒️"),
 ]

@@ -61,6 +61,19 @@ def parser() -> argparse.ArgumentParser:
     archive = sub.add_parser("archive", help="move mail to the account's archive folder")
     archive.add_argument("mail_ids", nargs="+")
 
+    log = sub.add_parser("triage-log", help="list the mail that the notifier processed, newest first")
+    log.add_argument("--account", default="")
+    log.add_argument("--status", default="", choices=["", *("dispatched", "notified", "silent", "error", "no_report")])
+    log.add_argument("--since", help="for example 2d, 12h, yesterday or 2026-09-01")
+    log.add_argument("--query", default="", help="text in the subject, the sender or the summary")
+    log.add_argument("--limit", type=int, default=50)
+
+    entry = sub.add_parser("triage-show", help="show one entry of the triage log")
+    entry.add_argument("entry_id", type=int)
+
+    again = sub.add_parser("triage-retry", help="process the mail of a triage log entry again")
+    again.add_argument("entry_id", type=int)
+
     sub.add_parser("events", help="show the new-mail events that the notifier has not finished")
 
     auth = sub.add_parser("auth", help="sign in to an OAuth account")
@@ -110,6 +123,12 @@ def run(args: argparse.Namespace) -> Any:
         return client.mark(args.mail_ids, command == "mark-read")
     if command == "archive":
         return client.archive(args.mail_ids)
+    if command == "triage-log":
+        return client.triage_list(account=args.account, status=args.status, since=args.since, query=args.query, limit=args.limit)
+    if command == "triage-show":
+        return client.triage_show(args.entry_id)
+    if command == "triage-retry":
+        return client.triage_retry(args.entry_id)
     if command == "events":
         return {"events": client.events()}
     if command == "auth":
