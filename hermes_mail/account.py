@@ -27,7 +27,7 @@ from typing import Any, Callable
 from . import auth, mime
 from .config import Account
 from .imapproto import (
-    ParseError, Part, attachment_parts, chunks, compact_set, imap_date, parse_bodystructure, parse_fetch,
+    ParseError, Part, attachment_parts, chunks, compact_set, imap_date, parse_bodystructure, parse_fetch, parse_list,
     quote_mailbox, section, text_parts,
 )
 from .store import Store, mail_id
@@ -44,6 +44,7 @@ ERROR_NOTICE_SECONDS = 30 * 60
 # because a server can refuse a sign-in for a time, for example with a rate
 # limit. The retry sends no second event.
 AUTH_RETRY_SECONDS = 6 * 3600
+SPECIAL_USE = ("archive", "all", "drafts", "sent", "junk", "trash", "flagged")
 NETWORK_ERRORS = (OSError, ssl.SSLError, socket.timeout, imaplib.IMAP4.abort)
 
 
@@ -352,6 +353,24 @@ class MailAccount:
         _check(imap.select(quote_mailbox(folder), readonly=not writable), f"{'SELECT' if writable else 'EXAMINE'} {folder}")
         if _uidvalidity(imap) != record["uidvalidity"]:
             raise MailError(f"the folder {folder} changed on the server; wait for the next sync")
+
+    def list_folders(self) -> list[dict[str, Any]]:
+        """The folders that the server lets the account select, with the special use of each: archive, all, drafts, sent,
+        junk, trash, flagged or inbox. A read-only LIST."""
+
+        def operation(imap: imaplib.IMAP4) -> list[dict[str, Any]]:
+            folders = parse_list(_check(imap.list(), "LIST"))
+            for folder in folders:
+                names = {flag.lower() for flag in folder.pop("flags")}
+                folder["special"] = next((use for use in SPECIAL_USE if f"\\{use}" in names), "")
+                if folder["name"].upper() == "INBOX":
+                    folder["special"] = "inbox"
+            return folders
+
+        try:
+            return self._with_action(operation)
+        except ParseError as error:
+            raise MailError(f"cannot read the folder list: {error}") from error
 
     def set_read(self, records: list[dict[str, Any]], read: bool) -> dict[str, dict[str, Any]]:
         """Add or remove \\Seen. Return a result for each mail ID."""

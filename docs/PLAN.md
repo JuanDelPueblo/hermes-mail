@@ -56,7 +56,8 @@ every account:
    an explicit archive action. Only `mail_archive`/`hermes-mail archive`
    moves, deletes or expunges mail, and only the UIDs it names: `UID MOVE`
    when the server has it, otherwise `UID COPY` + `UID STORE +\Deleted` +
-   `UID EXPUNGE` of exactly those UIDs. Nothing else does.
+   `UID EXPUNGE` of exactly those UIDs. Nothing else does. The dashboard and
+   `hermes-mail folders` also run a read-only `LIST` to show the folder names.
 7. The tests record the IMAP commands of each operation. They fail on any
    `BODY[]`, `RFC822` or full-folder fetch, and on a bare `CLOSE` or
    `EXPUNGE` outside the archive fallback path.

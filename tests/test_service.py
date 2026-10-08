@@ -195,6 +195,34 @@ class ServiceTest(unittest.TestCase):
         self.assertFalse(response["ok"])
         self.assertIn("message not found", response["error"])
 
+    def test_folders_lists_selectable_folders_with_their_special_use(self):
+        self.box.listing = [
+            '(\\HasNoChildren) "/" "INBOX"',
+            '(\\HasNoChildren \\Archive) "/" "Archive"',
+            '(\\Noselect \\HasChildren) "/" "[Gmail]"',
+            '(\\HasNoChildren \\All) "/" "[Gmail]/All Mail"',
+            '(\\HasNoChildren) "/" "Clases/Programaci&APM-n"',
+        ]
+        service = self.start(archive_folder="Archive")
+        before = len(self.box.commands)
+        result = self.call(service, op="folders", account="uni")
+        self.assertEqual(result["folders"], [
+            {"name": "INBOX", "special": "inbox"},
+            {"name": "Archive", "special": "archive"},
+            {"name": "[Gmail]/All Mail", "special": "all"},
+            {"name": "Clases/Programación", "special": ""},
+        ])
+        self.assertEqual((result["archive_folder"], result["synced"]), ("Archive", ["INBOX"]))
+        commands = [command.split(" ", 1)[1].upper() for command in self.box.commands[before:]]
+        self.assertTrue(any(command.startswith("LIST") for command in commands))
+        self.assertFalse(any(command.startswith(("SELECT", "UID", "STORE", "CLOSE", "EXPUNGE")) for command in commands))
+
+    def test_folders_rejects_an_unknown_account(self):
+        service = self.start()
+        response = service.handle({"op": "folders", "account": "nope"})
+        self.assertFalse(response["ok"])
+        self.assertIn("unknown account", response["error"])
+
     def test_archive_moves_the_message_with_uid_move(self):
         service = self.start(archive_folder="Archive")
         homework = self.call(service, op="list", query="Homework")["messages"][0]

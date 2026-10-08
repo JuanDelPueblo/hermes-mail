@@ -416,6 +416,8 @@ class DashboardTest(unittest.TestCase):
                                        "settings": settings, "base": settings, "password": "", "error": ""}]},
             "accounts": {"ok": True, "accounts": {"uni": {"address": "s@x.edu", "notify": base_notify}}},
             "status": {"ok": True, "accounts": [{"name": "uni", "status": "idle", "error": "", "last_sync": ""}]},
+            "folders": {"ok": True, "account": "uni", "archive_folder": "Archive", "synced": ["INBOX"],
+                        "folders": [{"name": "INBOX", "special": "inbox"}, {"name": "Archive", "special": "archive"}]},
             "settings_save": {"ok": True, "account": "uni"},
             "settings_delete": {"ok": True, "account": "uni"},
         })
@@ -480,6 +482,13 @@ class DashboardTest(unittest.TestCase):
         self.assertEqual(self.hermes.settings["notify"], {})
         result = self.route("POST", "/accounts/{name}/reset")("uni")
         self.assertEqual(result, {"ok": False, "error": "unknown"})
+
+    def test_folders_come_from_the_service(self):
+        result = self.route("GET", "/accounts/{name}/folders")("uni")
+        self.assertEqual(result["folders"][1], {"name": "Archive", "special": "archive"})
+        self.assertEqual((result["archive_folder"], result["synced"]), ("Archive", ["INBOX"]))
+        self.assertEqual(self.service.requests[-1], {"op": "folders", "account": "uni"})
+        self.assertFalse(self.route("GET", "/accounts/{name}/folders")("../x")["ok"])
 
     def test_triage_model(self):
         ctx = self.hermes

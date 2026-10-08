@@ -73,6 +73,9 @@ class Client:
     def accounts(self) -> Dict[str, Any]:
         return self.request({"op": "accounts"})["accounts"]
 
+    def folders(self, account: str) -> Dict[str, Any]:
+        return self.request({"op": "folders", "account": account})
+
     def list(self, **filters: Any) -> Dict[str, Any]:
         return self.request({"op": "list", **{key: value for key, value in filters.items() if value not in (None, "", False)}})
 
