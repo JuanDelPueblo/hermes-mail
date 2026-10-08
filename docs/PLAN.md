@@ -102,26 +102,25 @@ agent run does not do these steps:
    task, `hermes_mail_triage`, so `auxiliary.hermes_mail_triage` sets its
    model. The main model and the channel display settings do not apply. The
    call uses no tools, so any model with structured output can do it.
-3. The result has a fixed schema: `notify` or `silent`, a reason, a summary,
-   the attachment indexes to send, and an optional task.
-4. The plugin code does the actions: mark read, export attachments, run the
-   task command, and send one message for each notified mail. The message
-   contains only the summary and the attachments.
+3. The result has a fixed schema: `notify` or `silent`, a reason, a summary
+   and the attachment indexes to send.
+4. The plugin code does the actions: mark read, export attachments, and send
+   one message for each notified mail. The message contains only the summary
+   and the attachments.
 5. The plugin code reports every failure with a `Mail problem:` message. If
    the classification fails, the plugin notifies with the sender and the
    subject, so no mail is lost without a message.
 6. The plugin sends with the `send_message` tool of Hermes, the same path as
    `hermes send`. When a send fails, the notifier sends the same message
    again up to 8 times, with a delay from 5 seconds to 10 minutes. A retry
-   does not run the triage, the export or the task command again.
+   does not run the triage or the export again.
 
 Each account has a notification policy:
 
-- `mode`: `triage`, `all` or `none`.
+- `mode`: `triage`, `agent` or `none`.
 - `target`: the platform and chat that get the messages.
 - `policyFile`: the triage rules, in the config file of the deployment.
 - `markReadSilent`: mark mail as read when the triage says `silent`.
-- `taskCommand`: an optional command for a task, for example a To Do helper.
 
 Every handled event also writes an entry in the triage log of the service
 (the `triage` table of the index, 30 days by default): the decision, the
@@ -129,6 +128,41 @@ reason, the summary, the actions and the errors, but never the mail text. The
 Mail tab, `hermes-mail triage-log` and the `mail_triage_log` tool read it, so
 the owner can see what the plugin did with a message without any chat
 gateway. If the log cannot be written, the notification still goes out.
+
+### Agent mode
+
+Work like creating a task or a calendar entry needs tools, and the classifier
+call has none. For an account with `mode = "agent"` the plugin therefore lets
+a Hermes agent run do the triage, and it keeps the properties above:
+
+- The transport is the webhook platform of the Hermes gateway. The notifier
+  stays the bridge, so the service stays free of Hermes and keeps its
+  acknowledgement and retry rules. It writes a `dispatched` entry in the
+  triage log, then sends a signed event (generic HMAC V2, delivery ID
+  `hermes-mail-<event number>`, so a second send is a no-op) to the
+  `hermes-mail` route. The event has the account, the mail ID, a run ID and
+  the policy text, and no mail text.
+- The route delivers to `log`. The text that the run makes, its interim
+  messages included, goes nowhere. This solves the problem that this section
+  starts with. The only exit is the `mail_triage_report` tool.
+- The report needs the run ID of an open entry and works once. The service
+  completes the entry atomically (`triage_report`). Then code, in the
+  gateway process, does the actions that must not depend on the model: mark
+  read for `silent`, export the attachments, and send one message to the
+  target of the account, from the notify settings. The model gives no target.
+- The route and its toolsets are in the Hermes config. Hermes sets
+  `toolsets` for a webhook route only by a manual edit, so nobody can grant
+  tools to the run from the dashboard or from an agent. `hermes mail
+  agent-route` prints the route. Email text can steer the run, so the
+  default toolsets are only `mail`, `mail_triage` and `skills`, and the
+  policy names the actions that are allowed.
+- A sweeper in the notifier ends each run that does not report within
+  `agent_timeout_minutes` as `no_report` and sends a `Mail problem:`
+  message, so no mail goes unseen. If the route cannot be reached, the event
+  stays unacknowledged and the notifier retries it with the backoff of the
+  chat sends; a wrong secret or a missing route gets a message at once.
+- The agent runs on the main model of Hermes. The triage model settings
+  apply to the classifier only.
 
 A later version can add a daily digest of silent mail. Questions about a mail
 in the chat use the normal agent with the plugin tools. `hermes mail triage
@@ -178,8 +212,8 @@ setting stays with its owner:
   plugin settings (`notify`, `triage_provider`, `triage_model` in the
   `config_schema`). The tab writes them with the Hermes plugin settings
   writer, and the notifier reads them with `ctx.get_config`. They stay out of
-  the service, so a socket user cannot set the task command that the
-  notifier runs as the Hermes user.
+  the service, so a socket user cannot change the notify target or the
+  policy that the notifier uses as the Hermes user.
 
 ## NixOS module
 

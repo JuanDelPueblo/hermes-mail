@@ -253,6 +253,54 @@ class ServiceTest(unittest.TestCase):
         self.call(service, op="triage_update", id=identifier, fields={"status": "no_report", "error": "no answer"})
         self.assertTrue(self.call(service, op="triage_show", id=identifier)["finished"])
 
+    def test_an_agent_run_reports_once(self):
+        service = self.make_service()
+        entry = {"account": "uni", "mail_id": "uni.abc", "subject": "Exam moved", "mode": "agent", "status": "dispatched", "run_id": "1-abc"}
+        identifier = self.call(service, op="triage_record", entry=entry, event_seq=1)["id"]
+        report = {"status": "notified", "decision": "notify", "reason": "A person wrote.", "summary": "The exam moved.",
+                  "actions": [{"step": "create task", "ok": True}]}
+        row = self.call(service, op="triage_report", run_id="1-abc", fields=report)
+        self.assertEqual((row["id"], row["status"], row["summary"], row["subject"], row["run_id"]), (identifier, "notified", "The exam moved.", "Exam moved", "1-abc"))
+        self.assertTrue(row["finished"])
+        self.assertEqual(row["actions"], [{"step": "create task", "ok": True}])
+        again = service.handle({"op": "triage_report", "run_id": "1-abc", "fields": report})
+        self.assertFalse(again["ok"])
+        self.assertIn("already reported", again["error"])
+        self.assertEqual(self.call(service, op="triage_show", id=identifier)["summary"], "The exam moved.")
+
+    def test_a_report_needs_the_run_id_of_an_open_entry(self):
+        service = self.make_service()
+        self.call(service, op="triage_record", entry={"account": "uni", "mail_id": "uni.abc", "status": "silent"}, event_seq=1)
+        self.call(service, op="triage_record", entry={"account": "uni", "mail_id": "uni.def", "status": "dispatched", "run_id": "2-def"}, event_seq=2)
+        for request, text in (
+            ({"run_id": "nope", "fields": {"status": "silent"}}, "unknown run ID"),
+            ({"run_id": "", "fields": {"status": "silent"}}, "run_id and fields"),
+            ({"run_id": "2-def", "fields": {"status": "error"}}, "notified or silent"),
+            ({"run_id": "2-def", "fields": "text"}, "run_id and fields"),
+        ):
+            with self.subTest(request=request):
+                response = service.handle({"op": "triage_report", **request})
+                self.assertFalse(response["ok"])
+                self.assertIn(text, response["error"])
+        # An entry without a run ID can never be claimed with an empty ID.
+        self.assertFalse(service.handle({"op": "triage_report", "run_id": "", "fields": {"status": "silent"}})["ok"])
+
+    def test_a_closed_run_cannot_report(self):
+        service = self.make_service()
+        identifier = self.call(service, op="triage_record", entry={"account": "uni", "mail_id": "uni.abc", "status": "dispatched", "run_id": "1-abc"})["id"]
+        self.call(service, op="triage_update", id=identifier, fields={"status": "no_report"}, expect_status="dispatched")
+        refused = service.handle({"op": "triage_report", "run_id": "1-abc", "fields": {"status": "notified"}})
+        self.assertFalse(refused["ok"])
+        self.assertIn("timed out", refused["error"])
+
+    def test_update_can_require_the_status(self):
+        service = self.make_service()
+        identifier = self.call(service, op="triage_record", entry={"account": "uni", "mail_id": "uni.abc", "status": "notified"})["id"]
+        response = service.handle({"op": "triage_update", "id": identifier, "fields": {"status": "no_report"}, "expect_status": "dispatched"})
+        self.assertFalse(response["ok"])
+        self.assertIn("with the status dispatched", response["error"])
+        self.assertEqual(self.call(service, op="triage_show", id=identifier)["status"], "notified")
+
     def test_triage_log_refuses_bad_requests(self):
         service = self.make_service()
         good = {"account": "uni", "mail_id": "uni.abc", "status": "silent"}

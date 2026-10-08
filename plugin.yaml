@@ -1,6 +1,6 @@
 name: hermes-mail
 version: 0.1.0
-description: "Read, search and manage recent IMAP mail through hermes-maild, and triage new mail into chat notifications."
+description: "Read, search and manage recent IMAP mail through hermes-maild, and triage new mail into chat notifications, with an optional agent that uses its own tools."
 author: JuanDelPueblo
 license: MIT
 homepage: https://github.com/JuanDelPueblo/hermes-mail
@@ -19,6 +19,7 @@ provides_tools:
   - mail_mark_unread
   - mail_archive
   - mail_triage_log
+  - mail_triage_report
 config_schema:
   socket:
     type: str
@@ -28,7 +29,17 @@ config_schema:
     type: dict
     default: {}
     label: "Notifications"
-    description: "Notifications for each account, keyed by the account name. An entry replaces the base notifications of that account. Keys: mode (triage, all or none), target, policy, mark_read_silent and task_command (a list of words). The Mail tab of the dashboard edits this setting."
+    description: "Notifications for each account, keyed by the account name. An entry replaces the base notifications of that account. Keys: mode (triage, agent or none), target, policy and mark_read_silent. The Mail tab of the dashboard edits this setting."
+  agent_webhook_url:
+    type: str
+    default: ""
+    label: "Agent webhook URL"
+    description: "The hermes-mail route of the gateway webhook, for accounts with mode agent. Empty means http://127.0.0.1:8644/webhooks/hermes-mail. The secret is $HERMES_MAIL_WEBHOOK_SECRET or $WEBHOOK_SECRET in the Hermes environment."
+  agent_timeout_minutes:
+    type: int
+    default: 15
+    label: "Agent timeout (minutes)"
+    description: "How long an agent run can take before the notifier tells the owner that it did not report."
   triage_provider:
     type: str
     default: ""

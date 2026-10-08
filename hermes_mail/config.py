@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -10,7 +11,8 @@ from typing import Any
 
 DEFAULT_SOCKET = "/run/hermes-mail/mail.sock"
 PROVIDERS = ("microsoft", "google", "imap")
-NOTIFY_MODES = ("triage", "all", "none")
+NOTIFY_MODES = ("triage", "agent", "none")
+log = logging.getLogger("hermes_mail")
 ACCOUNT_NAME = re.compile(r"[a-z][a-z0-9_-]{0,31}")
 # mail_archive moves a message here when the account sets no archive_folder.
 # Gmail treats "[Gmail]/All Mail" as the archive: moving a message there just
@@ -30,7 +32,6 @@ class Notify:
     policy_file: str = ""
     policy: str = ""
     mark_read_silent: bool = False
-    task_command: tuple[str, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -39,7 +40,6 @@ class Notify:
             "policy_file": self.policy_file,
             "policy": self.policy,
             "mark_read_silent": self.mark_read_silent,
-            "task_command": list(self.task_command),
         }
 
 
@@ -96,7 +96,13 @@ def parse_account(name: str, raw: dict[str, Any]) -> Account:
     folders = tuple(raw.get("folders") or ("INBOX",))
     notify_raw = raw.get("notify") or {}
     mode = notify_raw.get("mode", "none")
+    _require(
+        mode != "all",
+        f"account {name}: notify.mode 'all' was removed; use 'triage' with a policy that notifies for everything, or 'agent'",
+    )
     _require(mode in NOTIFY_MODES, f"account {name}: notify.mode must be one of {', '.join(NOTIFY_MODES)}")
+    if notify_raw.get("task_command"):
+        log.warning("account %s: notify.task_command was removed and is ignored; use notify.mode 'agent' to create tasks", name)
     if mode != "none":
         _require(bool(notify_raw.get("target")), f"account {name}: notify.target is required when notify.mode is {mode}")
     sync_days = int(raw.get("sync_days", 7))
@@ -121,7 +127,6 @@ def parse_account(name: str, raw: dict[str, Any]) -> Account:
             policy_file=notify_raw.get("policy_file") or "",
             policy=notify_raw.get("policy") or "",
             mark_read_silent=bool(notify_raw.get("mark_read_silent", False)),
-            task_command=tuple(notify_raw.get("task_command") or ()),
         ),
     )
 
