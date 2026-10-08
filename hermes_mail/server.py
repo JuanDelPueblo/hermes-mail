@@ -331,9 +331,25 @@ class Service:
         if "status" in fields:
             self._triage_status(fields["status"])
         identifier = int(request.get("id"))
-        if not self.store.triage_update(identifier, fields):
-            raise RequestError(f"no triage entry {identifier}")
+        expect = str(request.get("expect_status") or "")
+        if not self.store.triage_update(identifier, fields, expect_status=expect):
+            raise RequestError(f"no triage entry {identifier}" + (f" with the status {expect}" if expect else ""))
         return {"id": identifier}
+
+    def op_triage_report(self, request: dict[str, Any]) -> dict[str, Any]:
+        """The end of an agent run: complete the open entry of this run ID. A run can report once."""
+        run_id = str(request.get("run_id") or "")
+        fields = request.get("fields")
+        if not run_id or not isinstance(fields, dict):
+            raise RequestError("run_id and fields are required")
+        if fields.get("status") not in ("notified", "silent"):
+            raise RequestError("the status of a report must be notified or silent")
+        result = self.store.triage_claim(run_id, fields)
+        if result == "unknown":
+            raise RequestError("unknown run ID; a report needs the run ID of the mail that the notifier sent")
+        if result == "closed":
+            raise RequestError("this run already reported or timed out")
+        return self._triage_out(result)
 
     def op_triage_list(self, request: dict[str, Any]) -> dict[str, Any]:
         status = str(request.get("status") or "")

@@ -36,6 +36,8 @@ state directory.
   reason, the summary, the actions and any error of each message. Use it when
   the owner asks what happened to a message, why something was or was not
   notified, or what came in while they were away. Give `id` for one entry.
+- `mail_triage_report`: only for a run that the mail notifier started, whose
+  prompt gives a run ID. It ends that run. Never call it in a normal chat.
 
 The `hermes-mail` command in the terminal has the same operations.
 

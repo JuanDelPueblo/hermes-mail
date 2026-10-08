@@ -12,11 +12,11 @@ from . import tools, triage
 
 
 def register(ctx) -> None:
-    tools.configure(ctx.get_config("socket", ""))
+    tools.configure(ctx.get_config("socket", ""), lambda: ctx.get_config("notify", {}))
     for name, schema, handler, emoji in tools.TOOLS:
         ctx.register_tool(
             name=name,
-            toolset="mail",
+            toolset=tools.TOOLSETS.get(name, "mail"),
             schema=schema,
             handler=handler,
             check_fn=tools.available,
