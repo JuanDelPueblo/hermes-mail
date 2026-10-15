@@ -1,17 +1,25 @@
-"""uni-mail: the command line client for uni-maild.
+"""uni-mail: the command line client of uni-maild, and the event dispatcher.
 
-The command names and arguments match the old Thunderbird bridge, so the
-existing prompts and skills continue to work. Each command prints JSON.
+Each mail command prints JSON. `uni-mail dispatch` reads the "dispatch"
+section of the config file and delivers events; `uni-mail migrate` moves a
+hermes-mail installation to uni-mail.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import logging
+import os
+import signal
 import sys
+import threading
+from datetime import datetime
+from pathlib import Path
 from typing import Any
 
 from .client import Client, MailServiceError
+from .config import DEFAULT_CONFIG, ConfigError
 
 
 def _print(value: Any) -> None:
@@ -19,8 +27,10 @@ def _print(value: Any) -> None:
 
 
 def parser() -> argparse.ArgumentParser:
-    result = argparse.ArgumentParser(prog="uni-mail", description="Read and manage recent mail through uni-maild")
-    result.add_argument("--socket", default="", help="the service socket (default: $UNI_MAIL_SOCKET or /run/uni-mail/mail.sock)")
+    result = argparse.ArgumentParser(prog="uni-mail", description="Read and manage recent mail through uni-maild, and dispatch its events")
+    result.add_argument("--socket", default="", help="the daemon socket (default: the config file's socket, $UNI_MAIL_SOCKET or /run/uni-mail/mail.sock)")
+    result.add_argument("--config", default=os.environ.get("UNI_MAIL_CONFIG", DEFAULT_CONFIG),
+                        help=f"the config file, for dispatch and migrate (default: $UNI_MAIL_CONFIG or {DEFAULT_CONFIG})")
     sub = result.add_subparsers(dest="command", required=True)
 
     sub.add_parser("status", help="show the accounts, their sign-in state and the last sync")
@@ -61,26 +71,57 @@ def parser() -> argparse.ArgumentParser:
     archive = sub.add_parser("archive", help="move mail to the account's archive folder")
     archive.add_argument("mail_ids", nargs="+")
 
-    log = sub.add_parser("triage-log", help="list the mail that the notifier processed, newest first")
-    log.add_argument("--account", default="")
-    log.add_argument("--status", default="", choices=["", *("dispatched", "notified", "silent", "error", "no_report")])
-    log.add_argument("--since", help="for example 2d, 12h, yesterday or 2026-09-01")
-    log.add_argument("--query", default="", help="text in the subject, the sender or the summary")
-    log.add_argument("--limit", type=int, default=50)
-
-    entry = sub.add_parser("triage-show", help="show one entry of the triage log")
-    entry.add_argument("entry_id", type=int)
-
-    again = sub.add_parser("triage-retry", help="process the mail of a triage log entry again")
-    again.add_argument("entry_id", type=int)
-
-    sub.add_parser("events", help="show the new-mail events that the notifier has not finished")
+    events = sub.add_parser("events", help="show the daemon's event log")
+    events.add_argument("--after", type=int, default=0, help="only the events after this sequence number")
+    events.add_argument("--limit", type=int, default=100)
 
     auth = sub.add_parser("auth", help="sign in to an OAuth account")
     auth_sub = auth.add_subparsers(dest="auth_command", required=True)
     login = auth_sub.add_parser("login", help="sign in with a browser")
     login.add_argument("account")
     login.add_argument("--redirect", help="the redirect URL; without it, the command asks for it")
+
+    account = sub.add_parser("account", help="change the accounts of the running daemon (kept in its settings.json)")
+    account_sub = account.add_subparsers(dest="account_command", required=True)
+    account_sub.add_parser("list", help="show every account with its settings and where they come from")
+    save = account_sub.add_parser("set", help="add an account or replace its settings")
+    save.add_argument("name")
+    save.add_argument("settings", help='the settings as JSON, for example {"provider": "microsoft", "address": "me@example.edu"}')
+    save.add_argument("--password-stdin", action="store_true", help="read the password of a password account from stdin")
+    account_sub.add_parser("remove", help="remove an account").add_argument("name")
+    account_sub.add_parser("reset", help="go back to the account of the config file").add_argument("name")
+
+    dispatch = sub.add_parser("dispatch", help="deliver events to the destinations of the config file")
+    dispatch_sub = dispatch.add_subparsers(dest="dispatch_command", required=True)
+    dispatch_sub.add_parser("run", help="deliver events until stopped (the uni-mail-dispatch service)")
+    dispatch_sub.add_parser("once", help="read the waiting events, make the due attempts, and exit")
+    dispatch_sub.add_parser("status", help="show each destination's backlog and health")
+    dispatch_sub.add_parser("check", help="check the dispatch section of the config file")
+    listing = dispatch_sub.add_parser("list", help="list deliveries, newest first")
+    listing.add_argument("--destination", default="")
+    listing.add_argument("--status", default="", choices=["", "pending", "running", "delivered", "dead"])
+    listing.add_argument("--event-id", default="")
+    listing.add_argument("--limit", type=int, default=50)
+    dispatch_sub.add_parser("show", help="show one delivery with its event and its last result").add_argument("delivery_id")
+    retry = dispatch_sub.add_parser("retry", help="queue dead deliveries again with a new set of attempts")
+    retry.add_argument("delivery_ids", nargs="*")
+    retry.add_argument("--all-dead", action="store_true", help="every dead delivery (of --destination, if given)")
+    retry.add_argument("--destination", default="")
+    retry.add_argument("--force", action="store_true", help="also deliver again a delivery that succeeded")
+    test = dispatch_sub.add_parser("test", help="send a synthetic event to one destination now")
+    test.add_argument("destination")
+    test.add_argument("--event-type", default="mail.new", choices=["mail.new", "mail.auth", "mail.error"])
+    replay = dispatch_sub.add_parser("replay", help="queue the events still in the daemon's log for one destination")
+    replay.add_argument("destination")
+    replay.add_argument("--since", default="", help="only events from this time: 2d, 12h, yesterday or an ISO date")
+
+    migrate = sub.add_parser("migrate", help="copy a hermes-mail installation to uni-mail (see docs/MIGRATION.md)")
+    migrate.add_argument("--from-config", default="/etc/hermes-mail/config.json")
+    migrate.add_argument("--to-config", default=DEFAULT_CONFIG)
+    migrate.add_argument("--state-dir", default="/var/lib/uni-mail", help="the new state directory")
+    migrate.add_argument("--owner", default="uni-mail", help="the user and group of the new state (when run as root)")
+    migrate.add_argument("--with-cache", action="store_true", help="also copy the part cache and the exports")
+    migrate.add_argument("--apply", action="store_true", help="make the copy; without it, only report the plan")
     return result
 
 
@@ -99,9 +140,104 @@ def login(client: Client, account: str, redirect: str | None) -> dict[str, Any]:
     return client.auth_finish(account, redirect)
 
 
+def _load_config(path: str) -> tuple[Any, Any]:
+    from . import config as mail_config
+    from .dispatch import config as dispatch_config
+
+    cfg = mail_config.load(path)
+    raw = json.loads(Path(path).read_text())
+    return cfg, dispatch_config.parse(raw.get("dispatch"))
+
+
+def _since(value: str) -> float:
+    from .server import RequestError, parse_time
+
+    try:
+        return datetime.fromisoformat(parse_time(value)).timestamp()
+    except RequestError as error:
+        raise ConfigError(str(error)) from None
+
+
+def run_dispatch(args: argparse.Namespace) -> Any:
+    from .dispatch.runner import Dispatcher
+
+    cfg, dispatch_cfg = _load_config(args.config)
+    command = args.dispatch_command
+    if command == "check":
+        problems = {}
+        for name, destination in dispatch_cfg.destinations.items():
+            if destination.kind == "webhook":
+                try:
+                    if not destination.secret():
+                        problems[name] = f"the secret variable {destination.secret_env} is empty"
+                except ConfigError as error:
+                    problems[name] = str(error)
+            elif not os.access(destination.argv[0], os.X_OK):
+                problems[name] = f"{destination.argv[0]} is not an executable file for this user"
+        result = {"destinations": sorted(dispatch_cfg.destinations), "state_dir": str(dispatch_cfg.state_dir), "problems": problems}
+        if problems:
+            result["ok"] = False
+        return result
+    client = Client(args.socket or str(cfg.socket))
+    dispatcher = Dispatcher(dispatch_cfg, client)
+    try:
+        if command == "run":
+            stop = threading.Event()
+            signal.signal(signal.SIGTERM, lambda *_: stop.set())
+            signal.signal(signal.SIGINT, lambda *_: stop.set())
+            dispatcher.run(stop)
+            return None
+        if command == "once":
+            return dispatcher.run_once()
+        if command == "status":
+            return dispatcher.status()
+        if command == "list":
+            return {"deliveries": dispatcher.queue.list(destination=args.destination, status=args.status, event_id=args.event_id,
+                                                        limit=args.limit)}
+        if command == "show":
+            delivery = dispatcher.queue.get(args.delivery_id)
+            if delivery is None:
+                raise ConfigError(f"no delivery {args.delivery_id} (or the prefix is not unique)")
+            delivery.pop("body", None)
+            return delivery
+        if command == "retry":
+            ids = list(args.delivery_ids)
+            if args.all_dead:
+                ids += [row["delivery_id"] for row in dispatcher.queue.list(destination=args.destination, status="dead", limit=1000)]
+            if not ids:
+                raise ConfigError("name a delivery ID, or use --all-dead")
+            results = {}
+            for identifier in ids:
+                delivery = dispatcher.queue.get(identifier)
+                if delivery is None:
+                    results[identifier] = "not found"
+                elif dispatcher.queue.retry(delivery["delivery_id"], force=args.force):
+                    results[delivery["delivery_id"]] = "queued"
+                else:
+                    results[delivery["delivery_id"]] = f"not queued: it is {delivery['status']} (use --force for a delivered one)"
+            return {"results": results}
+        if command == "test":
+            result = dispatcher.test(args.destination, args.event_type)
+            if result["outcome"] != "delivered":
+                result["ok"] = False
+            return result
+        if command == "replay":
+            return {"destination": args.destination,
+                    "queued": dispatcher.replay(args.destination, _since(args.since) if args.since else 0.0)}
+    finally:
+        dispatcher.close()
+    raise SystemExit(f"unknown dispatch command {command}")
+
+
 def run(args: argparse.Namespace) -> Any:
-    client = Client(args.socket)
     command = args.command
+    if command == "dispatch":
+        return run_dispatch(args)
+    if command == "migrate":
+        from . import migrate
+
+        return migrate.run(args)
+    client = Client(args.socket)
     if command == "status":
         return client.status()
     if command == "folders":
@@ -123,21 +259,33 @@ def run(args: argparse.Namespace) -> Any:
         return client.mark(args.mail_ids, command == "mark-read")
     if command == "archive":
         return client.archive(args.mail_ids)
-    if command == "triage-log":
-        return client.triage_list(account=args.account, status=args.status, since=args.since, query=args.query, limit=args.limit)
-    if command == "triage-show":
-        return client.triage_show(args.entry_id)
-    if command == "triage-retry":
-        return client.triage_retry(args.entry_id)
     if command == "events":
-        return {"events": client.events()}
+        return client.events(after=args.after, limit=args.limit)
     if command == "auth":
         return login(client, args.account, args.redirect)
+    if command == "account":
+        sub = args.account_command
+        if sub == "list":
+            return client.settings()
+        if sub == "set":
+            try:
+                settings = json.loads(args.settings)
+            except ValueError as error:
+                raise ConfigError(f"the settings are not JSON: {error}") from None
+            password = sys.stdin.readline().rstrip("\n") if args.password_stdin else None
+            return client.settings_save(args.name, settings, password)
+        if sub == "remove":
+            return client.settings_delete(args.name)
+        if sub == "reset":
+            return client.settings_reset(args.name)
     raise SystemExit(f"unknown command {command}")
 
 
 def main(argv: list[str] | None = None) -> int:
     args = parser().parse_args(argv)
+    if args.command == "dispatch":
+        logging.basicConfig(level=os.environ.get("UNI_MAIL_LOG_LEVEL", "INFO").upper(), stream=sys.stderr,
+                            format="%(levelname)s %(message)s")
     try:
         result = run(args)
     except MailServiceError as error:
@@ -146,12 +294,17 @@ def main(argv: list[str] | None = None) -> int:
         if response and "results" in response:
             _print(response)
         return 1
+    except (ConfigError, KeyError, OSError) as error:
+        print(f"uni-mail: {error.args[0] if isinstance(error, KeyError) else error}", file=sys.stderr)
+        return 1
     except (EOFError, KeyboardInterrupt):
         print("uni-mail: cancelled", file=sys.stderr)
         return 1
-    result.pop("ok", None)
+    if result is None:
+        return 0
+    failed = result.pop("ok", True) is False
     _print(result)
-    return 0
+    return 1 if failed else 0
 
 
 if __name__ == "__main__":

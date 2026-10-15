@@ -1,6 +1,6 @@
 """One IMAP account: the sync worker and the on-demand actions.
 
-Download rules (docs/PLAN.md):
+Download rules (docs/DESIGN.md):
 
 - The sync reads only the messages inside the sync window (UID SEARCH SINCE).
 - It reads flags, sizes, BODYSTRUCTURE, six header fields and a text preview

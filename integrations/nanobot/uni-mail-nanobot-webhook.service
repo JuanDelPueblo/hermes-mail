@@ -1,0 +1,59 @@
+# Example unit for the optional uni-mail -> Nanobot webhook receiver.
+# Copy to /etc/systemd/system/uni-mail-nanobot-webhook.service and replace:
+#   NANOBOT_USER   the user that runs `nanobot gateway` (owns the workspace)
+#   trg_XXXXXXXX   the trigger ID from `/trigger mail`
+#   /home/NANOBOT_USER/...  the real nanobot binary and data directory
+# The secret is the file named in the uni-mail webhook destination's "secret_file";
+# it is handed in as a credential, so the service user needs no access to /etc/uni-mail.
+# Not needed if the dispatcher runs the command sink instead (see README.md).
+
+[Unit]
+Description=uni-mail webhook receiver for Nanobot triggers
+After=network.target
+
+[Service]
+User=NANOBOT_USER
+Group=NANOBOT_USER
+LoadCredential=secret:/etc/uni-mail/secrets/nanobot-webhook
+StateDirectory=uni-mail-nanobot
+# Loopback only. For another host, keep this and put a TLS reverse proxy in front.
+ExecStart=/usr/bin/python3 /opt/uni-mail/integrations/nanobot/uni_mail_nanobot_webhook.py \
+    --host 127.0.0.1 --port 8790 --path /uni-mail \
+    --secret-file %d/secret \
+    --state %S/uni-mail-nanobot/webhook.sqlite3 \
+    --trigger-id trg_XXXXXXXX \
+    --nanobot /home/NANOBOT_USER/.local/bin/nanobot
+Restart=on-failure
+RestartSec=5
+UMask=0077
+
+# Hardening. `nanobot trigger` must write the workspace inbox (and read the
+# config), so the nanobot data directory is the one writable path under /home.
+# Add --workspace/--config above if the gateway does not use the defaults, and
+# list their directories here.
+ReadWritePaths=/home/NANOBOT_USER/.nanobot
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+ProtectProc=invisible
+ProcSubset=pid
+RestrictAddressFamilies=AF_INET AF_INET6
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+CapabilityBoundingSet=
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged
+
+[Install]
+WantedBy=multi-user.target

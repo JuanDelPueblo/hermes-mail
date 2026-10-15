@@ -1,8 +1,11 @@
 [Unit]
-Description=uni-mail IMAP index service
+Description=uni-mail daemon: IMAP index, socket API and event log
+Documentation=https://github.com/JuanDelPueblo/uni-mail
 Wants=network-online.target
 After=network-online.target
 RequiresMountsFor=/var/lib/uni-mail
+# Never sync the same accounts next to the daemon this one replaced (docs/MIGRATION.md).
+Conflicts=hermes-mail.service hermes-mail-notify.service
 
 [Service]
 Environment=UNI_MAIL_LOG_LEVEL=INFO
@@ -35,7 +38,8 @@ RestrictSUIDSGID=true
 LockPersonality=true
 CapabilityBoundingSet=
 SystemCallArchitectures=native
-SystemCallFilter=@system-service ~@privileged ~@resources
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
 
 [Install]
 WantedBy=multi-user.target

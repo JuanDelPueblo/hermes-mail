@@ -155,7 +155,8 @@ class ConfigTest(unittest.TestCase):
     def test_defaults(self):
         cfg = config.parse(self.base())
         account = cfg.accounts["uni"]
-        self.assertEqual((account.auth, account.folders, account.sync_days, account.notify.mode), ("oauth", ("INBOX",), 7, "none"))
+        self.assertEqual((account.auth, account.folders, account.sync_days), ("oauth", ("INBOX",), 7))
+        self.assertFalse(hasattr(account, "notify"))
         self.assertEqual(str(cfg.socket), "/run/uni-mail/mail.sock")
 
     def test_archive_folder_defaults_by_provider(self):
@@ -168,37 +169,28 @@ class ConfigTest(unittest.TestCase):
         overridden = config.parse(self.base(archive_folder="Old Mail")).accounts["uni"]
         self.assertEqual(overridden.archive_folder, "Old Mail")
 
-    def test_notify_modes(self):
-        for mode in ("triage", "agent"):
-            notify = config.parse(self.base(notify={"mode": mode, "target": "discord:1"})).accounts["uni"].notify
-            self.assertEqual(notify.mode, mode)
-            self.assertNotIn("task_command", notify.to_dict())
-        with self.assertRaisesRegex(config.ConfigError, "'all' was removed"):
-            config.parse(self.base(notify={"mode": "all", "target": "discord:1"}))
-        with self.assertRaisesRegex(config.ConfigError, "notify.target"):
-            config.parse(self.base(notify={"mode": "agent"}))
-        with self.assertRaisesRegex(config.ConfigError, "notify.mode must be one of"):
-            config.parse(self.base(notify={"mode": "loud"}))
-
-    def test_a_task_command_is_ignored_with_a_warning(self):
+    def test_old_notify_settings_are_ignored_with_a_warning(self):
+        for notify in ({"mode": "triage", "target": "discord:1"}, {"mode": "all"}, {"mode": "agent", "task_command": ["/bin/task"]}):
+            with self.subTest(notify=notify), self.assertLogs("uni_mail", "WARNING") as logs:
+                account = config.parse(self.base(notify=notify)).accounts["uni"]
+            self.assertIn("notify was removed", logs.output[0])
+            self.assertEqual(account.address, "a@b.edu")
         with self.assertLogs("uni_mail", "WARNING") as logs:
-            notify = config.parse(self.base(notify={"mode": "triage", "target": "d:1", "task_command": ["/bin/task"]})).accounts["uni"].notify
-        self.assertIn("task_command was removed", logs.output[0])
-        self.assertEqual(notify.mode, "triage")
+            config.parse({**self.base(), "triage_retention_days": 30})
+        self.assertIn("triage_retention_days was removed", logs.output[0])
 
-    def test_triage_retention(self):
-        self.assertEqual(config.parse(self.base()).triage_retention_days, 30)
-        self.assertEqual(config.parse({**self.base(), "triage_retention_days": 0}).triage_retention_days, 0)
+    def test_event_retention(self):
+        self.assertEqual(config.parse(self.base()).event_retention_days, 14)
+        self.assertEqual(config.parse({**self.base(), "event_retention_days": 0}).event_retention_days, 0)
         for value in (-1, 4000):
-            with self.assertRaisesRegex(config.ConfigError, "triage_retention_days"):
-                config.parse({**self.base(), "triage_retention_days": value})
+            with self.assertRaisesRegex(config.ConfigError, "event_retention_days"):
+                config.parse({**self.base(), "event_retention_days": value})
 
     def test_errors(self):
         for account, message in [
             ({"provider": "yahoo"}, "provider"),
             ({"provider": "imap"}, "password"),
             ({"auth": "password"}, "password_file"),
-            ({"notify": {"mode": "triage"}}, "notify.target"),
             ({"sync_days": 0}, "sync_days"),
         ]:
             with self.subTest(account=account), self.assertRaisesRegex(config.ConfigError, message):

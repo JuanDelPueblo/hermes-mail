@@ -2,7 +2,7 @@
   "state_dir": "/var/lib/uni-mail",
   "socket": "/run/uni-mail/mail.sock",
   "web_settings": true,
-  "triage_retention_days": 30,
+  "event_retention_days": 14,
   "export_dir": "/var/lib/uni-mail/exports",
   "extract_root": null,
   "accounts": {
@@ -10,13 +10,7 @@
       "provider": "microsoft",
       "address": "student@example.edu",
       "folders": ["INBOX"],
-      "sync_days": 7,
-      "notify": {
-        "mode": "triage",
-        "target": "discord:1234567890",
-        "policy_file": "/etc/uni-mail/university-policy.md",
-        "mark_read_silent": true
-      }
+      "sync_days": 7
     },
     "selfhosted": {
       "provider": "imap",
@@ -24,10 +18,32 @@
       "auth": "password",
       "host": "mail.example.net",
       "password_file": "/etc/uni-mail/passwords/selfhosted",
-      "archive_folder": "Archive",
-      "notify": {
-        "mode": "none",
-        "target": ""
+      "archive_folder": "Archive"
+    }
+  },
+  "dispatch": {
+    "state_dir": "/var/lib/uni-mail-dispatch",
+    "retention_days": 30,
+    "retry": {"max_attempts": 8, "initial_seconds": 30, "max_seconds": 3600},
+    "destinations": {
+      "nanobot": {
+        "type": "command",
+        "argv": [
+          "/usr/bin/python3",
+          "/opt/uni-mail/integrations/nanobot/uni_mail_nanobot_trigger.py",
+          "--trigger-id", "trg_XXXXXXXX"
+        ],
+        "events": ["mail.new"],
+        "accounts": ["university"],
+        "timeout_seconds": 60,
+        "permanent_exit_codes": [64, 65]
+      },
+      "archive-hook": {
+        "type": "webhook",
+        "url": "https://hooks.example.net/uni-mail",
+        "secret_file": "/etc/uni-mail/secrets/archive-hook",
+        "events": ["mail.*"],
+        "timeout_seconds": 15
       }
     }
   }

@@ -1,8 +1,12 @@
 # Install on Fedora Server
 
-This guide installs `uni-maild`, the `uni-mail` command, the Hermes
-plugin and the notifier on Fedora Server 44. The service needs Python 3.14 or
-later. Fedora Server 44 ships it as `python3`. Check it first:
+This guide installs `uni-maild`, the `uni-mail` command, the dispatcher and,
+optionally, `uni-mail-mcp`, on Fedora Server 44 with systemd. It needs no
+LLM, agent framework or desktop mail client. To move an existing hermes-mail
+installation, follow [MIGRATION.md](MIGRATION.md) instead.
+
+uni-mail needs Python 3.14 or later (IMAP IDLE). Fedora Server 44 ships it as
+`python3`:
 
 ```sh
 python3 --version
@@ -10,23 +14,27 @@ python3 --version
 
 ## 1. Install the Python package
 
-Run the commands from a checkout of this repository:
+From a checkout of this repository:
 
 ```sh
 sudo dnf install python3
 sudo python3 -m venv /opt/uni-mail
-sudo /opt/uni-mail/bin/pip install .
+sudo /opt/uni-mail/bin/pip install '.[mcp]'      # or '.' without the MCP server
 ```
 
-With no network access, install the build backend from Fedora and add
-`--no-build-isolation`:
+The daemon, the CLI and the dispatcher use only the standard library; the
+`mcp` extra adds the MCP SDK for `uni-mail-mcp`. With no network access,
+install the build backend from Fedora, use `pip install --no-build-isolation .`
+and leave out the extra.
+
+For the Nanobot examples, copy the integration scripts too:
 
 ```sh
-sudo dnf install python3-setuptools
-sudo /opt/uni-mail/bin/pip install --no-build-isolation .
+sudo mkdir -p /opt/uni-mail/integrations
+sudo cp -r integrations/nanobot /opt/uni-mail/integrations/
 ```
 
-## 2. Create the service user and the directories
+## 2. Create the users and the directories
 
 ```sh
 sudo cp deploy/sysusers.d/uni-mail.conf /etc/sysusers.d/
@@ -35,121 +43,151 @@ sudo cp deploy/tmpfiles.d/uni-mail.conf /etc/tmpfiles.d/
 sudo systemd-tmpfiles --create /etc/tmpfiles.d/uni-mail.conf
 ```
 
-This creates the `uni-mail` user and group, `/var/lib/uni-mail` and
-`/var/lib/uni-mail/exports`, both with mode 0750.
+This creates:
+
+- the `uni-mail` user and group, which own `/var/lib/uni-mail` and
+  `/var/lib/uni-mail/exports` (mode 0750);
+- the `uni-mail-dispatch` user, a member of the `uni-mail` group, which owns
+  `/var/lib/uni-mail-dispatch` (mode 0700).
 
 ## 3. Write the config
 
 ```sh
 sudo mkdir -p /etc/uni-mail
 sudo cp deploy/config.example.json /etc/uni-mail/config.json
+sudo chown root:uni-mail /etc/uni-mail/config.json
+sudo chmod 0640 /etc/uni-mail/config.json
 ```
 
-Then edit `/etc/uni-mail/config.json`:
+The file has three kinds of settings:
 
-- Set the accounts. One account per entry of `accounts`.
-- For a `triage` or `agent` notify mode, set `notify.target`.
-- Put the triage policy of each account in its own file, for example
-  `/etc/uni-mail/university-policy.md`, and set `notify.policy_file`.
-- Put the password of a password account in its own file, for example
-  `/etc/uni-mail/passwords/selfhosted`. Give it mode 0600:
+- **Mail** (read by `uni-maild`): `state_dir`, `socket`, `export_dir`,
+  `extract_root` (`null` turns `extract-attachment` off),
+  `event_retention_days` (default 14, `0` keeps the event log for ever),
+  `web_settings` (let socket clients such as `uni-mail account set` change the
+  accounts; default `true`) and `accounts.<name>` with `provider`, `address`,
+  `auth`, `host`, `port`, `password_file`, `folders`, `archive_folder`,
+  `sync_days`, `poll_seconds`, `cache_limit_mb` and `max_part_mb`.
+- **Event delivery** (read by `uni-mail dispatch`): the `dispatch` section,
+  see [EVENTS.md](EVENTS.md).
+- **Integrations** are not in this file: the Nanobot example keeps its own
+  settings in the destination's `argv` (see `integrations/nanobot/`).
+
+`archive_folder` defaults to `Archive` for `microsoft` and `[Gmail]/All Mail`
+for `google`; the `imap` provider has no default.
+
+Put the password of a password account in its own file that only the
+daemon can read. The dispatcher is in the `uni-mail` group, so a password file
+must not be readable by the group:
 
 ```sh
-sudo chown uni-mail:uni-mail /etc/uni-mail/passwords/selfhosted
-sudo chmod 0600 /etc/uni-mail/passwords/selfhosted
+sudo install -d -m 0700 -o uni-mail -g uni-mail /etc/uni-mail/passwords
+sudo install -m 0600 -o uni-mail -g uni-mail /dev/stdin /etc/uni-mail/passwords/selfhosted
 ```
 
-The service validates the file at start and prints a clear error for each
-problem.
+Put webhook secrets in files that only the dispatcher can read:
 
-## 4. Run the service
+```sh
+sudo install -d -m 0750 -o root -g uni-mail-dispatch /etc/uni-mail/secrets
+openssl rand -hex 32 | sudo install -m 0640 -o root -g uni-mail-dispatch /dev/stdin /etc/uni-mail/secrets/archive-hook
+```
+
+## 4. Run the daemon
 
 ```sh
 sudo cp deploy/uni-mail.service /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable --now uni-mail.service
-/opt/uni-mail/bin/uni-mail status
-```
-
-The unit runs `/opt/uni-mail/bin/uni-maild` with
-`/etc/uni-mail/config.json`. To change a path or the log level, write a
-drop-in in `/etc/systemd/system/uni-mail.service.d/` and run
-`systemctl daemon-reload`.
-
-The unit is hardened: the service can reach the network, its socket and its
-state directory, and nothing more. When you set `extract_root` in the config,
-also add that path to `ReadWritePaths` in a drop-in, and change
-`ProtectHome=true` to `ProtectHome=read-only` when the path is below `/home`.
-
-## 5. Give Hermes access to the socket
-
-```sh
 sudo ln -s /opt/uni-mail/bin/uni-mail /usr/local/bin/uni-mail
-sudo usermod -aG uni-mail <hermes-user>
+uni-mail status
 ```
 
-Log in again, so the group membership applies. Members of the group can use
-the socket at `/run/uni-mail/mail.sock` and read the exported attachments.
+The unit is hardened: the daemon can reach the network, its socket and its
+state directory, and nothing more. It runs no program and sends no webhook.
+When you set `extract_root`, add that path to `ReadWritePaths` in a drop-in,
+and change `ProtectHome=true` to `ProtectHome=read-only` when it is below
+`/home`.
 
-## 6. Install the plugin
+Members of the `uni-mail` group can use the socket `/run/uni-mail/mail.sock`
+and read the exported attachments:
 
 ```sh
-scripts/build-plugin.sh
-hermes plugins install "file://$PWD/dist/uni-mail-plugin"
-hermes plugins enable uni-mail
+sudo usermod -aG uni-mail <user>     # log in again afterwards
 ```
 
-Hermes installs plugins from git sources only. The build script writes a git
-repository into `dist/uni-mail-plugin`, so the `file://` path works.
-
-Then restart Hermes. Do not install the whole repository as a plugin: its
-security scan finds the public Thunderbird client secret in the service code.
-
-## 7. Run the notifier
-
-First set the values of your Hermes install in
-`deploy/uni-mail-notify.service`: the path of the `hermes` command, the
-user, the group, the working directory and `HERMES_HOME`. The notifier needs
-the same identity and environment as the Hermes gateway, so it reads the same
-config, credentials and plugins.
-
-```sh
-sudo cp deploy/uni-mail-notify.service /etc/systemd/system/
-sudo systemctl daemon-reload
-sudo systemctl enable --now uni-mail-notify.service
-```
-
-## 8. Sign in and verify
+## 5. Sign in
 
 ```sh
 uni-mail auth login university
-uni-mail status
-hermes mail triage <mail-id>
 ```
 
-The last command tests the triage of one message and changes nothing.
+1. Open the printed URL in a browser and sign in, with MFA if the account
+   asks for it.
+2. The browser goes to a `localhost` URL that does not load. This is expected.
+3. Copy the full URL from the address bar and paste it into the command.
+
+The account starts to sync in a few seconds. If a provider later refuses the
+refresh token, the account stops and the daemon records one `mail.auth`
+event.
+
+## 6. Run the dispatcher
+
+Add destinations to the `dispatch` section (see [EVENTS.md](EVENTS.md) and
+`integrations/nanobot/README.md`), then:
+
+```sh
+sudo -u uni-mail-dispatch /opt/uni-mail/bin/uni-mail dispatch check
+sudo cp deploy/uni-mail-dispatch.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now uni-mail-dispatch.service
+sudo -u uni-mail-dispatch /opt/uni-mail/bin/uni-mail dispatch test <destination>
+sudo -u uni-mail-dispatch /opt/uni-mail/bin/uni-mail dispatch status
+```
+
+The command destinations run as the dispatcher's user. To run `nanobot
+trigger`, which writes the Nanobot workspace, give the unit the Nanobot
+user with a drop-in (`systemctl edit uni-mail-dispatch.service`; see
+`integrations/nanobot/README.md`).
+
+## 7. The MCP server (optional)
+
+MCP clients start `uni-mail-mcp` over stdio themselves; its user must be in
+the `uni-mail` group. For a remote client, run it over Streamable HTTP with a
+bearer token, on loopback behind a TLS proxy:
+
+```sh
+uni-mail-mcp --transport streamable-http --host 127.0.0.1 --port 8765 --token-file /etc/uni-mail/secrets/mcp-token
+```
+
+It refuses to start without a token, or on a non-loopback address without
+`--allow-remote`.
 
 ## SELinux
 
-Fedora runs SELinux. When the service does not start, read its log:
+Fedora runs SELinux. When a service does not start, read its log:
 
 ```sh
-journalctl -u uni-mail.service
+journalctl -u uni-mail.service -u uni-mail-dispatch.service
 sudo ausearch -m avc -ts recent
 ```
 
-When the log shows a denial for `/opt/uni-mail`, fix the file labels and
-start again:
+When the log shows a denial for `/opt/uni-mail`, fix the file labels:
 
 ```sh
 sudo restorecon -RFv /opt/uni-mail
 ```
 
-## Move the state from NixOS
+A command destination below `/home` cannot be started directly by a system
+unit (`init_t` may not run `user_home_t` files). Start it through a program
+in `/usr/bin`, for example `"argv": ["/usr/bin/python3", "/home/user/script.py"]`,
+or install it below `/opt`.
+
+## Move the state to another host
 
 The state directory holds the index, the cache and the sign-in tokens. Copy it
-with its modes, then the accounts need no new sign-in:
+with its modes, and the accounts need no new sign-in:
 
 ```sh
-sudo rsync -a --info=progress2 old-host:/var/lib/uni-mail/ /var/lib/uni-mail/
+sudo systemctl stop uni-mail.service
+sudo rsync -a old-host:/var/lib/uni-mail/ /var/lib/uni-mail/
 ```

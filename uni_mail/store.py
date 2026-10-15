@@ -85,7 +85,9 @@ class Store:
     def _upgrade(self) -> None:
         with self._lock:
             if self._db.execute("PRAGMA user_version").fetchone()[0] >= SCHEMA_VERSION:
-                return
+                # hermes-mail may have run in between (a rollback) and appended events without an ID.
+                if self._db.execute("SELECT 1 FROM events WHERE event_id IS NULL LIMIT 1").fetchone() is None:
+                    return
             self._db.execute("BEGIN IMMEDIATE")
             try:
                 columns = {row["name"] for row in self._db.execute("PRAGMA table_info(events)")}
