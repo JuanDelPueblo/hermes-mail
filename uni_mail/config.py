@@ -9,10 +9,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-DEFAULT_SOCKET = "/run/hermes-mail/mail.sock"
+DEFAULT_SOCKET = "/run/uni-mail/mail.sock"
 PROVIDERS = ("microsoft", "google", "imap")
-NOTIFY_MODES = ("triage", "agent", "none")
-log = logging.getLogger("hermes_mail")
+log = logging.getLogger("uni_mail")
+DEFAULT_CONFIG = "/etc/uni-mail/config.json"
 ACCOUNT_NAME = re.compile(r"[a-z][a-z0-9_-]{0,31}")
 # mail_archive moves a message here when the account sets no archive_folder.
 # Gmail treats "[Gmail]/All Mail" as the archive: moving a message there just
@@ -23,24 +23,6 @@ DEFAULT_ARCHIVE_FOLDER = {"microsoft": "Archive", "google": "[Gmail]/All Mail"}
 
 class ConfigError(ValueError):
     pass
-
-
-@dataclass(frozen=True)
-class Notify:
-    mode: str = "none"
-    target: str = ""
-    policy_file: str = ""
-    policy: str = ""
-    mark_read_silent: bool = False
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "mode": self.mode,
-            "target": self.target,
-            "policy_file": self.policy_file,
-            "policy": self.policy,
-            "mark_read_silent": self.mark_read_silent,
-        }
 
 
 @dataclass(frozen=True)
@@ -58,7 +40,6 @@ class Account:
     poll_seconds: int = 300
     cache_limit_mb: int = 100
     max_part_mb: int = 25
-    notify: Notify = field(default_factory=Notify)
 
 
 @dataclass(frozen=True)
@@ -70,10 +51,10 @@ class Config:
     accounts: dict[str, Account]
     # The accounts as the config file holds them, before the web settings.
     base: dict[str, dict[str, Any]] = field(default_factory=dict)
-    # Accept account changes from the socket (the Hermes dashboard).
+    # Accept account changes from the socket (`uni-mail account` and other clients).
     web_settings: bool = True
-    # Days to keep the triage log. 0 keeps it for ever.
-    triage_retention_days: int = 30
+    # Days to keep the event log. 0 keeps it for ever.
+    event_retention_days: int = 14
 
 
 def _require(condition: bool, message: str) -> None:
@@ -94,17 +75,10 @@ def parse_account(name: str, raw: dict[str, Any]) -> Account:
     if provider == "imap":
         _require(bool(raw.get("host")), f"account {name}: the imap provider needs host")
     folders = tuple(raw.get("folders") or ("INBOX",))
-    notify_raw = raw.get("notify") or {}
-    mode = notify_raw.get("mode", "none")
-    _require(
-        mode != "all",
-        f"account {name}: notify.mode 'all' was removed; use 'triage' with a policy that notifies for everything, or 'agent'",
-    )
-    _require(mode in NOTIFY_MODES, f"account {name}: notify.mode must be one of {', '.join(NOTIFY_MODES)}")
-    if notify_raw.get("task_command"):
-        log.warning("account %s: notify.task_command was removed and is ignored; use notify.mode 'agent' to create tasks", name)
-    if mode != "none":
-        _require(bool(notify_raw.get("target")), f"account {name}: notify.target is required when notify.mode is {mode}")
+    if raw.get("notify"):
+        # hermes-mail notifications. Events now go to the destinations of the
+        # "dispatch" section; see docs/MIGRATION.md.
+        log.warning("account %s: notify was removed and is ignored; configure dispatch destinations instead", name)
     sync_days = int(raw.get("sync_days", 7))
     _require(1 <= sync_days <= 365, f"account {name}: sync_days must be 1 to 365")
     return Account(
@@ -121,13 +95,6 @@ def parse_account(name: str, raw: dict[str, Any]) -> Account:
         poll_seconds=max(30, int(raw.get("poll_seconds", 300))),
         cache_limit_mb=max(1, int(raw.get("cache_limit_mb", 100))),
         max_part_mb=max(1, int(raw.get("max_part_mb", 25))),
-        notify=Notify(
-            mode=mode,
-            target=notify_raw.get("target") or "",
-            policy_file=notify_raw.get("policy_file") or "",
-            policy=notify_raw.get("policy") or "",
-            mark_read_silent=bool(notify_raw.get("mark_read_silent", False)),
-        ),
     )
 
 
@@ -136,8 +103,10 @@ def parse(raw: dict[str, Any]) -> Config:
     base = {name: dict(value) for name, value in (raw.get("accounts") or {}).items()}
     accounts = {name: parse_account(name, value) for name, value in base.items()}
     state_dir = Path(raw["state_dir"])
-    retention = int(raw.get("triage_retention_days", 30))
-    _require(0 <= retention <= 3650, "triage_retention_days must be 0 to 3650")
+    if "triage_retention_days" in raw:
+        log.warning("triage_retention_days was removed and is ignored; the triage log is no longer written")
+    retention = int(raw.get("event_retention_days", 14))
+    _require(0 <= retention <= 3650, "event_retention_days must be 0 to 3650")
     return Config(
         state_dir=state_dir,
         socket=Path(raw.get("socket") or DEFAULT_SOCKET),
@@ -146,7 +115,7 @@ def parse(raw: dict[str, Any]) -> Config:
         accounts=accounts,
         base=base,
         web_settings=bool(raw.get("web_settings", True)),
-        triage_retention_days=retention,
+        event_retention_days=retention,
     )
 
 

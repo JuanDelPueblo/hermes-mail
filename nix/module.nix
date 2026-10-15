@@ -6,11 +6,11 @@
   ...
 }:
 let
-  cfg = config.services.hermes-mail;
+  cfg = config.services.uni-mail;
   inherit (lib) mkOption types;
 
-  socketPath = "/run/hermes-mail/mail.sock";
-  defaultUser = "hermes-mail";
+  socketPath = "/run/uni-mail/mail.sock";
+  defaultUser = "uni-mail";
 
   notifyOptions = {
     options = {
@@ -26,7 +26,7 @@ let
           classifies each message with one LLM call and notifies only for the
           messages that the policy selects. `agent` hands each message to a
           Hermes agent run that follows the policy with its own tools, for
-          example to create tasks; it needs the `hermes-mail` route in the
+          example to create tasks; it needs the `uni-mail` route in the
           webhook config of Hermes (`hermes mail agent-route` prints it).
           `none` sends nothing, but the tools can still read the account.
         '';
@@ -110,7 +110,7 @@ let
           default = null;
           example = "Archive";
           description = ''
-            The folder `mail_archive`/`hermes-mail archive` moves messages to.
+            The folder `mail_archive`/`uni-mail archive` moves messages to.
             The default is `Archive` for the `microsoft` provider and
             `[Gmail]/All Mail` for `google`. The `imap` provider has no
             default; set this to use archiving with it.
@@ -144,7 +144,7 @@ let
       };
     };
 
-  serviceConfig = (pkgs.formats.json { }).generate "hermes-mail.json" {
+  serviceConfig = (pkgs.formats.json { }).generate "uni-mail.json" {
     state_dir = cfg.stateDir;
     socket = socketPath;
     web_settings = cfg.webSettings;
@@ -187,14 +187,14 @@ let
   hermesCfg = config.services.hermes-agent;
 in
 {
-  options.services.hermes-mail = {
-    enable = lib.mkEnableOption "the hermes-mail IMAP service";
+  options.services.uni-mail = {
+    enable = lib.mkEnableOption "the uni-mail IMAP service";
 
     package = mkOption {
       type = types.package;
       default = pkgs.callPackage ./package.nix { };
-      defaultText = lib.literalMD "the hermes-mail package of this flake";
-      description = "The package with `hermes-maild` and `hermes-mail`.";
+      defaultText = lib.literalMD "the uni-mail package of this flake";
+      description = "The package with `uni-maild` and `uni-mail`.";
     };
 
     pluginPackage = mkOption {
@@ -221,14 +221,14 @@ in
 
     stateDir = mkOption {
       type = types.str;
-      default = "/var/lib/hermes-mail";
+      default = "/var/lib/uni-mail";
       description = "The index, the message cache and the sign-in tokens. The tokens have mode 0600.";
     };
 
     exportDir = mkOption {
       type = types.str;
       default = "${cfg.stateDir}/exports";
-      defaultText = lib.literalExpression ''"''${config.services.hermes-mail.stateDir}/exports"'';
+      defaultText = lib.literalExpression ''"''${config.services.uni-mail.stateDir}/exports"'';
       description = "Where `export-attachment` saves files. The Hermes user must be able to read them.";
     };
 
@@ -294,8 +294,8 @@ in
         default = false;
         description = ''
           Connect the service to `services.hermes-agent`: add the plugin and
-          the `hermes-mail` command to Hermes. Also enable the plugin in the
-          Hermes config: `hermes plugins enable hermes-mail`.
+          the `uni-mail` command to Hermes. Also enable the plugin in the
+          Hermes config: `hermes plugins enable uni-mail`.
         '';
       };
       notifier = mkOption {
@@ -304,7 +304,7 @@ in
         description = ''
           Run `hermes mail notify` as the Hermes user. It triages new mail and
           sends notifications. Configure its model with
-          `auxiliary.hermes_mail_triage` in the Hermes settings.
+          `auxiliary.uni_mail_triage` in the Hermes settings.
         '';
       };
     };
@@ -318,26 +318,26 @@ in
             assertion = lib.all (name: builtins.match "[a-z][a-z0-9_-]{0,31}" name != null) (
               lib.attrNames cfg.accounts
             );
-            message = "services.hermes-mail.accounts: a name must have 1 to 32 lower-case letters, digits, - or _, and start with a letter.";
+            message = "services.uni-mail.accounts: a name must have 1 to 32 lower-case letters, digits, - or _, and start with a letter.";
           }
           {
             assertion = !cfg.hermes.enable || hasHermes;
-            message = "services.hermes-mail.hermes.enable needs the services.hermes-agent NixOS module.";
+            message = "services.uni-mail.hermes.enable needs the services.hermes-agent NixOS module.";
           }
         ]
         ++ lib.concatLists (
           lib.mapAttrsToList (name: account: [
             {
               assertion = account.provider != "imap" || (account.host != null && account.passwordFile != null);
-              message = "services.hermes-mail.accounts.${name}: the imap provider needs host and passwordFile.";
+              message = "services.uni-mail.accounts.${name}: the imap provider needs host and passwordFile.";
             }
             {
               assertion = account.auth != "password" || account.passwordFile != null;
-              message = "services.hermes-mail.accounts.${name}: password sign-in needs passwordFile.";
+              message = "services.uni-mail.accounts.${name}: password sign-in needs passwordFile.";
             }
             {
               assertion = account.notify.mode == "none" || account.notify.target != "";
-              message = "services.hermes-mail.accounts.${name}.notify.target is required when notify.mode is ${account.notify.mode}.";
+              message = "services.uni-mail.accounts.${name}.notify.target is required when notify.mode is ${account.notify.mode}.";
             }
           ]) cfg.accounts
         );
@@ -353,24 +353,24 @@ in
 
         environment.systemPackages = [ cfg.package ];
 
-        systemd.tmpfiles.settings.hermes-mail = lib.genAttrs [ cfg.stateDir cfg.exportDir ] (_: {
+        systemd.tmpfiles.settings.uni-mail = lib.genAttrs [ cfg.stateDir cfg.exportDir ] (_: {
           d = {
             inherit (cfg) user group;
             mode = "0750";
           };
         });
 
-        systemd.services.hermes-mail = {
-          description = "hermes-mail IMAP index service";
+        systemd.services.uni-mail = {
+          description = "uni-mail IMAP index service";
           wantedBy = [ "multi-user.target" ];
           wants = [ "network-online.target" ];
           after = [ "network-online.target" ];
           unitConfig.RequiresMountsFor = writablePaths;
           serviceConfig = {
-            ExecStart = "${lib.getExe' cfg.package "hermes-maild"} --config ${serviceConfig} --log-level ${cfg.logLevel}";
+            ExecStart = "${lib.getExe' cfg.package "uni-maild"} --config ${serviceConfig} --log-level ${cfg.logLevel}";
             User = cfg.user;
             Group = cfg.group;
-            RuntimeDirectory = "hermes-mail";
+            RuntimeDirectory = "uni-mail";
             RuntimeDirectoryMode = "0750";
             Restart = "on-failure";
             RestartSec = 10;
@@ -419,12 +419,12 @@ in
           ${hermesCfg.user}.extraGroups = [ cfg.group ];
         };
 
-        systemd.services.hermes-mail-notify = lib.mkIf (cfg.hermes.enable && cfg.hermes.notifier) {
-          description = "hermes-mail notifier: new-mail triage and notifications";
+        systemd.services.uni-mail-notify = lib.mkIf (cfg.hermes.enable && cfg.hermes.notifier) {
+          description = "uni-mail notifier: new-mail triage and notifications";
           wantedBy = [ "multi-user.target" ];
-          wants = [ "hermes-mail.service" ];
+          wants = [ "uni-mail.service" ];
           after = [
-            "hermes-mail.service"
+            "uni-mail.service"
             "hermes-agent.service"
           ];
           # The same identity and environment as the Hermes gateway, so the

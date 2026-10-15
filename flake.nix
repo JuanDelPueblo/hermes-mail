@@ -13,9 +13,9 @@
       nixosModules.default = ./nix/module.nix;
 
       packages.${system} = {
-        default = self.packages.${system}.hermes-mail;
-        hermes-mail = pkgs.callPackage ./nix/package.nix { };
-        hermes-mail-plugin = pkgs.callPackage ./nix/plugin.nix { };
+        default = self.packages.${system}.uni-mail;
+        uni-mail = pkgs.callPackage ./nix/package.nix { };
+        uni-mail-plugin = pkgs.callPackage ./nix/plugin.nix { };
         # Runs Dovecot and the service in a NixOS VM. It needs KVM, so it is
         # not a check.
         vm-test = import ./nix/tests/vm.nix { inherit pkgs self; };

@@ -8,17 +8,17 @@ Add the flake input and import the module:
 
 ```nix
 {
-  inputs.hermes-mail.url = "github:JuanDelPueblo/hermes-mail";
+  inputs.uni-mail.url = "github:JuanDelPueblo/uni-mail";
 
   # In a NixOS module:
-  imports = [ inputs.hermes-mail.nixosModules.default ];
+  imports = [ inputs.uni-mail.nixosModules.default ];
 }
 ```
 
 Example configuration:
 
 ```nix
-services.hermes-mail = {
+services.uni-mail = {
   enable = true;
   accounts = {
     university = {
@@ -41,9 +41,9 @@ services.hermes-mail = {
 
 Important options:
 
-- `user`, `group`: the service identity. The default is a `hermes-mail`
+- `user`, `group`: the service identity. The default is a `uni-mail`
   system user. The Hermes user needs the group to use the socket at
-  `/run/hermes-mail/mail.sock`. With `hermes.enable`, the module adds the
+  `/run/uni-mail/mail.sock`. With `hermes.enable`, the module adds the
   Hermes user to the group.
 - `stateDir`: the index, the cache and the sign-in tokens (mode 0600).
 - `exportDir`: where `export-attachment` saves files for chat uploads.
@@ -59,7 +59,7 @@ Important options:
 After the first deployment, enable the plugin in Hermes and restart it:
 
 ```sh
-hermes plugins enable hermes-mail
+hermes plugins enable uni-mail
 ```
 
 The plugin is not in `plugins.enabled` by default, because that list is

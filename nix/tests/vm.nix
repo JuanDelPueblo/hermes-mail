@@ -1,7 +1,7 @@
 { pkgs, self }:
 let
   # A throwaway certificate for the test server only.
-  cert = pkgs.runCommand "hermes-mail-test-cert" { nativeBuildInputs = [ pkgs.openssl ]; } ''
+  cert = pkgs.runCommand "uni-mail-test-cert" { nativeBuildInputs = [ pkgs.openssl ]; } ''
     mkdir $out
     openssl req -x509 -newkey rsa:2048 -nodes -days 3650 -subj /CN=localhost \
       -addext subjectAltName=DNS:localhost -keyout $out/key.pem -out $out/cert.pem
@@ -9,7 +9,7 @@ let
   mail = ./mail.eml;
 in
 pkgs.testers.runNixOSTest {
-  name = "hermes-mail";
+  name = "uni-mail";
 
   nodes.machine =
     { config, ... }:
@@ -37,16 +37,16 @@ pkgs.testers.runNixOSTest {
         };
       };
 
-      environment.etc."hermes-mail-password".text = "alice-password";
+      environment.etc."uni-mail-password".text = "alice-password";
       environment.systemPackages = [ pkgs.dovecot ];
 
-      services.hermes-mail = {
+      services.uni-mail = {
         enable = true;
         accounts.local = {
           provider = "imap";
           host = "localhost";
           address = "alice";
-          passwordFile = "/etc/hermes-mail-password";
+          passwordFile = "/etc/uni-mail-password";
           pollSeconds = 30;
         };
       };
@@ -56,20 +56,20 @@ pkgs.testers.runNixOSTest {
     import json
 
     def cli(command):
-        return json.loads(machine.succeed(f"hermes-mail {command}"))
+        return json.loads(machine.succeed(f"uni-mail {command}"))
 
     def deliver():
         machine.succeed("doveadm save -u alice < ${mail}")
 
     machine.wait_for_unit("dovecot.service")
-    machine.wait_for_unit("hermes-mail.service")
+    machine.wait_for_unit("uni-mail.service")
 
     # The first sync of the empty mailbox is the baseline.
-    machine.wait_until_succeeds("hermes-mail status | grep -q '\"status\": \"idle\"'", timeout=60)
+    machine.wait_until_succeeds("uni-mail status | grep -q '\"status\": \"idle\"'", timeout=60)
 
     with subtest("new mail makes one event"):
         deliver()
-        machine.wait_until_succeeds("hermes-mail events | grep -q mail.new", timeout=60)
+        machine.wait_until_succeeds("uni-mail events | grep -q mail.new", timeout=60)
         events = cli("events")["events"]
         assert len(events) == 1, events
         mail_id = events[0]["mail_id"]
@@ -96,13 +96,13 @@ pkgs.testers.runNixOSTest {
         machine.fail("doveadm fetch -u alice flags mailbox INBOX all | grep -q Seen")
 
     with subtest("the socket and the state are private"):
-        machine.succeed("test \"$(stat -c %a /run/hermes-mail/mail.sock)\" = 660")
-        machine.succeed("test \"$(stat -c %U /var/lib/hermes-mail/index.sqlite3)\" = hermes-mail")
-        machine.fail("sudo -u alice hermes-mail status")
+        machine.succeed("test \"$(stat -c %a /run/uni-mail/mail.sock)\" = 660")
+        machine.succeed("test \"$(stat -c %U /var/lib/uni-mail/index.sqlite3)\" = uni-mail")
+        machine.fail("sudo -u alice uni-mail status")
 
     with subtest("the service survives a restart without new events"):
-        machine.succeed("systemctl restart hermes-mail.service")
-        machine.wait_until_succeeds("hermes-mail status | grep -q '\"status\": \"idle\"'", timeout=60)
+        machine.succeed("systemctl restart uni-mail.service")
+        machine.wait_until_succeeds("uni-mail status | grep -q '\"status\": \"idle\"'", timeout=60)
         assert len(cli("events")["events"]) == 1
   '';
 }

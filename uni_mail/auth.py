@@ -236,7 +236,7 @@ class OAuthSession:
                 return self._access
             saved = self.store.load(self.account)
             if not saved or not saved.get("refresh_token"):
-                raise AuthError("no sign-in; run: hermes-mail auth login " + self.account)
+                raise AuthError("no sign-in; run: uni-mail auth login " + self.account)
             tokens = token_request(self.provider, {"grant_type": "refresh_token", "refresh_token": saved["refresh_token"]})
             if tokens.get("refresh_token") and tokens["refresh_token"] != saved["refresh_token"]:
                 self.store.save(self.account, {**saved, "refresh_token": tokens["refresh_token"], "refreshed": time.time()})

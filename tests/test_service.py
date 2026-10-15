@@ -1,4 +1,4 @@
-"""Tests for hermes-maild against the fake IMAP server and token endpoint."""
+"""Tests for uni-maild against the fake IMAP server and token endpoint."""
 
 from __future__ import annotations
 
@@ -20,9 +20,9 @@ sys.path.insert(0, str(Path(__file__).parent))
 sys.path.insert(0, str(Path(__file__).parents[1]))
 
 from fake_imap import FakeIMAPServer, FakeTokenEndpoint, Mailbox, Message  # noqa: E402
-from hermes_mail import auth, config  # noqa: E402
-from hermes_mail.client import Client, MailServiceError  # noqa: E402
-from hermes_mail.server import Service, SocketServer  # noqa: E402
+from uni_mail import auth, config  # noqa: E402
+from uni_mail.client import Client, MailServiceError  # noqa: E402
+from uni_mail.server import Service, SocketServer  # noqa: E402
 
 USER = "student@example.edu"
 PDF = b"%PDF-1.4 fake document " * 200
@@ -450,7 +450,7 @@ class ServiceTest(unittest.TestCase):
             return original(imap)
 
         account.sync = broken_once
-        with mock.patch("hermes_mail.account.log"):
+        with mock.patch("uni_mail.account.log"):
             service.start()
             wait_for(lambda: account.status == "error", message="the error state")
             self.assertIn("database is locked", account.error)

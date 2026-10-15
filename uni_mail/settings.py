@@ -1,19 +1,17 @@
-"""Account settings from the Hermes dashboard.
+"""Account changes over the socket (`uni-mail account ...`).
 
-The config file holds the base accounts. The dashboard changes them over the
-socket, and the service keeps the changes in <state_dir>/settings.json:
+The config file holds the base accounts. A socket client changes them, and
+the service keeps the changes in <state_dir>/settings.json (the same format
+as hermes-mail):
 
-- "accounts": the complete settings of each account that the dashboard added
-  or changed. They replace the base settings of that account.
-- "removed": the names of base accounts that the dashboard removed.
+- "accounts": the complete settings of each account that a client added or
+  changed. They replace the base settings of that account.
+- "removed": the names of base accounts that a client removed.
 
-A password from the dashboard goes into <state_dir>/passwords/<account> with
-mode 0600. The socket can never set a password file path or move an OAuth
-account to another host. Thus a socket user cannot send a stored password or
-token to a different server.
-
-Notifications are not here. The Hermes plugin keeps its own notification
-settings, because the notifier runs as the Hermes user.
+A password from a client goes into <state_dir>/passwords/<account> with mode
+0600. The socket can never set a password file path or move an OAuth account
+to another host. Thus a socket user cannot send a stored password or token to
+a different server.
 """
 
 from __future__ import annotations
@@ -108,11 +106,10 @@ class Settings:
     # Effective settings
 
     def _raw(self, name: str, changed: dict[str, Any], password: bool) -> dict[str, Any]:
-        """The service settings of a changed account: the dashboard values,
-        the notifications of the base account and the right password file."""
+        """The service settings of a changed account: the client values and the
+        right password file."""
         base = self.base.get(name) or {}
         raw = {key: changed[key] for key in EDITABLE if key in changed}
-        raw["notify"] = base.get("notify") or {}
         if password:
             raw["password_file"] = str(self.password_path(name))
         elif base.get("password_file") and all(_same(raw, base, key) for key in PASSWORD_SCOPE):
@@ -151,7 +148,7 @@ class Settings:
         if not ACCOUNT_NAME.fullmatch(name):
             raise ConfigError(f"account name {name!r} must match {ACCOUNT_NAME.pattern}")
         if "password_file" in values:
-            raise ConfigError("the dashboard cannot set a password file; send the password")
+            raise ConfigError("a socket client cannot set a password file; send the password")
         unknown = sorted(set(values) - set(EDITABLE))
         if unknown:
             raise ConfigError(f"unknown account settings: {', '.join(unknown)}")
@@ -203,7 +200,7 @@ class Settings:
         self._save()
 
     def describe(self, errors: dict[str, str]) -> list[dict[str, Any]]:
-        """Every account for the dashboard, with the removed base accounts."""
+        """Every account, with the removed base accounts."""
         result = []
         for name in sorted(set(self.base) | set(self.changed)):
             base = None
@@ -219,10 +216,10 @@ class Settings:
                     current = form(parse_account(name, raw))
                 except (ConfigError, TypeError, ValueError):
                     current = {key: raw.get(key) for key in EDITABLE}
-            password = "dashboard" if self.has_password(name) else "base" if raw and raw.get("password_file") else ""
+            password = "socket" if self.has_password(name) else "base" if raw and raw.get("password_file") else ""
             result.append({
                 "name": name,
-                "source": "base" if name in self.base else "dashboard",
+                "source": "base" if name in self.base else "socket",
                 "changed": name in self.changed and name in self.base,
                 "removed": name in self.removed,
                 "settings": current,

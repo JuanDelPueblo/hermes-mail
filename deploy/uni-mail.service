@@ -1,20 +1,20 @@
 [Unit]
-Description=hermes-mail IMAP index service
+Description=uni-mail IMAP index service
 Wants=network-online.target
 After=network-online.target
-RequiresMountsFor=/var/lib/hermes-mail
+RequiresMountsFor=/var/lib/uni-mail
 
 [Service]
-Environment=HERMES_MAIL_LOG_LEVEL=INFO
-ExecStart=/opt/hermes-mail/bin/hermes-maild --config /etc/hermes-mail/config.json
-User=hermes-mail
-Group=hermes-mail
-RuntimeDirectory=hermes-mail
+Environment=UNI_MAIL_LOG_LEVEL=INFO
+ExecStart=/opt/uni-mail/bin/uni-maild --config /etc/uni-mail/config.json
+User=uni-mail
+Group=uni-mail
+RuntimeDirectory=uni-mail
 RuntimeDirectoryMode=0750
 Restart=on-failure
 RestartSec=10
 UMask=0027
-ReadWritePaths=/var/lib/hermes-mail /var/lib/hermes-mail/exports
+ReadWritePaths=/var/lib/uni-mail /var/lib/uni-mail/exports
 NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true

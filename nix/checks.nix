@@ -7,7 +7,7 @@ let
   inherit (pkgs) lib;
   src = lib.cleanSource ../.;
   system = pkgs.stdenv.hostPlatform.system;
-  plugin = self.packages.${system}.hermes-mail-plugin;
+  plugin = self.packages.${system}.uni-mail-plugin;
 
   # Stands in for the services.hermes-agent module, which is not an input of
   # this flake. It declares only the options that the integration uses.
@@ -68,7 +68,7 @@ let
 
   plain = mkSystem [
     {
-      services.hermes-mail = {
+      services.uni-mail = {
         enable = true;
         inherit accounts;
       };
@@ -77,22 +77,22 @@ let
   withHermes = mkSystem [
     hermesStub
     {
-      services.hermes-mail = {
+      services.uni-mail = {
         enable = true;
         inherit accounts;
         hermes.enable = true;
       };
     }
   ];
-  unit = plain.config.systemd.services.hermes-mail;
+  unit = plain.config.systemd.services.uni-mail;
   hermesUnits = withHermes.config.systemd.services;
 in
 {
   inherit plugin;
-  hermes-mail = self.packages.${system}.hermes-mail;
+  uni-mail = self.packages.${system}.uni-mail;
 
   tests =
-    pkgs.runCommand "hermes-mail-tests"
+    pkgs.runCommand "uni-mail-tests"
       {
         nativeBuildInputs = [
           pkgs.python314
@@ -109,30 +109,30 @@ in
         touch $out
       '';
 
-  lint = pkgs.runCommand "hermes-mail-lint" { nativeBuildInputs = [ pkgs.ruff ]; } ''
+  lint = pkgs.runCommand "uni-mail-lint" { nativeBuildInputs = [ pkgs.ruff ]; } ''
     cd ${src}
     ruff check --no-cache --select E,F,W,B --ignore E501 --target-version py312 .
     touch $out
   '';
 
   # The plugin package must hold only what Hermes loads.
-  plugin-contents = pkgs.runCommand "hermes-mail-plugin-contents" { } ''
+  plugin-contents = pkgs.runCommand "uni-mail-plugin-contents" { } ''
     test -f ${plugin}/plugin.yaml
     test -f ${plugin}/__init__.py
     test -f ${plugin}/skills/mail/SKILL.md
-    test -f ${plugin}/hermes_mail/client.py
+    test -f ${plugin}/uni_mail/client.py
     test -f ${plugin}/dashboard/manifest.json
     test -f ${plugin}/dashboard/plugin_api.py
     test -f ${plugin}/dashboard/dist/index.js
-    test ! -e ${plugin}/hermes_mail/settings.py
-    test ! -e ${plugin}/hermes_mail/auth.py
+    test ! -e ${plugin}/uni_mail/settings.py
+    test ! -e ${plugin}/uni_mail/auth.py
     test ! -e ${plugin}/scripts
     test ! -e ${plugin}/tests
     touch $out
   '';
 
   module =
-    assert unit.serviceConfig.User == "hermes-mail";
+    assert unit.serviceConfig.User == "uni-mail";
     assert
       unit.serviceConfig.RestrictAddressFamilies == [
         "AF_UNIX"
@@ -140,17 +140,17 @@ in
         "AF_INET6"
       ];
     assert unit.serviceConfig.ProtectHome == true;
-    assert plain.config.users.users.hermes-mail.isSystemUser;
+    assert plain.config.users.users.uni-mail.isSystemUser;
     # No notifier and no Hermes changes without hermes.enable.
-    assert !(plain.config.systemd.services ? hermes-mail-notify);
-    assert hermesUnits.hermes-mail-notify.serviceConfig.User == "hermes";
+    assert !(plain.config.systemd.services ? uni-mail-notify);
+    assert hermesUnits.uni-mail-notify.serviceConfig.User == "hermes";
     assert
-      hermesUnits.hermes-mail-notify.serviceConfig.ExecStart
+      hermesUnits.uni-mail-notify.serviceConfig.ExecStart
       == "${lib.getExe' pkgs.hello "hermes"} mail notify";
-    assert hermesUnits.hermes-mail-notify.environment.HERMES_HOME == "/var/lib/hermes/.hermes";
+    assert hermesUnits.uni-mail-notify.environment.HERMES_HOME == "/var/lib/hermes/.hermes";
     assert withHermes.config.services.hermes-agent.extraPlugins == [ plugin ];
-    assert builtins.elem "hermes-mail" withHermes.config.users.users.hermes.extraGroups;
-    pkgs.runCommand "hermes-mail-module"
+    assert builtins.elem "uni-mail" withHermes.config.users.users.hermes.extraGroups;
+    pkgs.runCommand "uni-mail-module"
       {
         nativeBuildInputs = [ pkgs.jq ];
         execStart = unit.serviceConfig.ExecStart;
@@ -159,7 +159,7 @@ in
       ''
         config=$(echo "$execStart" | sed -E 's/.*--config ([^ ]+).*/\1/')
         jq -e '
-          .socket == "/run/hermes-mail/mail.sock"
+          .socket == "/run/uni-mail/mail.sock"
           and .accounts.university.notify.mode == "triage"
           and .accounts.university.notify.mark_read_silent
           and (.accounts.university.notify.policy_file | startswith("/nix/store/"))

@@ -1,4 +1,4 @@
-"""hermes-mail: the command line client for hermes-maild.
+"""uni-mail: the command line client for uni-maild.
 
 The command names and arguments match the old Thunderbird bridge, so the
 existing prompts and skills continue to work. Each command prints JSON.
@@ -19,8 +19,8 @@ def _print(value: Any) -> None:
 
 
 def parser() -> argparse.ArgumentParser:
-    result = argparse.ArgumentParser(prog="hermes-mail", description="Read and manage recent mail through hermes-maild")
-    result.add_argument("--socket", default="", help="the service socket (default: $HERMES_MAIL_SOCKET or /run/hermes-mail/mail.sock)")
+    result = argparse.ArgumentParser(prog="uni-mail", description="Read and manage recent mail through uni-maild")
+    result.add_argument("--socket", default="", help="the service socket (default: $UNI_MAIL_SOCKET or /run/uni-mail/mail.sock)")
     sub = result.add_subparsers(dest="command", required=True)
 
     sub.add_parser("status", help="show the accounts, their sign-in state and the last sync")
@@ -141,13 +141,13 @@ def main(argv: list[str] | None = None) -> int:
     try:
         result = run(args)
     except MailServiceError as error:
-        print(f"hermes-mail: {error}", file=sys.stderr)
+        print(f"uni-mail: {error}", file=sys.stderr)
         response = getattr(error, "response", None)
         if response and "results" in response:
             _print(response)
         return 1
     except (EOFError, KeyboardInterrupt):
-        print("hermes-mail: cancelled", file=sys.stderr)
+        print("uni-mail: cancelled", file=sys.stderr)
         return 1
     result.pop("ok", None)
     _print(result)

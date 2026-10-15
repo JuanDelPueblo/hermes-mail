@@ -1,10 +1,10 @@
-# hermes-mail
+# uni-mail
 
 IMAP mail access for the [Hermes agent](https://github.com/NousResearch/hermes-agent),
 with no desktop mail client. The repository has these parts:
 
-- `hermes-maild`: a small service that keeps an index of recent mail and
-  talks IMAP. The `hermes-mail` command is its client.
+- `uni-maild`: a small service that keeps an index of recent mail and
+  talks IMAP. The `uni-mail` command is its client.
 - A Hermes plugin with `mail_*` tools, a mail skill and a notifier that
   triages new mail into chat messages.
 - Deployment files for systemd: units, sysusers, tmpfiles and a config
@@ -14,7 +14,7 @@ with no desktop mail client. The repository has these parts:
 
 The service and the plugin use only the Python standard library. The service
 needs Python 3.14 or later. The plugin runs on the Python of Hermes (3.12 or
-later) and bundles its own socket client, so Hermes needs no hermes-mail
+later) and bundles its own socket client, so Hermes needs no uni-mail
 package.
 
 The design and its reasons are in [docs/PLAN.md](docs/PLAN.md).
@@ -43,7 +43,7 @@ The service never downloads a complete mailbox:
   and an attachment only as its own MIME part.
 - Every read uses `BODY.PEEK`, so reading never marks mail as read.
 - It opens folders read-only, except for a read-state change (one `UID
-  STORE` of `\Seen`) or an explicit `mail_archive`/`hermes-mail archive`
+  STORE` of `\Seen`) or an explicit `mail_archive`/`uni-mail archive`
   call. Archiving moves a message with `UID MOVE`, or, on a server without
   it, `UID COPY` then `UID STORE +\Deleted` then `UID EXPUNGE` of exactly
   those UIDs. It is the only path that removes, moves or expunges mail, and
@@ -54,11 +54,11 @@ The service never downloads a complete mailbox:
 The step-by-step guide for Fedora Server is
 [docs/INSTALL.md](docs/INSTALL.md). In short:
 
-1. `pip install .` into a venv, for example `/opt/hermes-mail`.
-2. Create the `hermes-mail` user with `deploy/sysusers.d/hermes-mail.conf`
-   and the directories with `deploy/tmpfiles.d/hermes-mail.conf`.
-3. Write `/etc/hermes-mail/config.json` from `deploy/config.example.json`.
-4. Install `deploy/hermes-mail.service` and start it.
+1. `pip install .` into a venv, for example `/opt/uni-mail`.
+2. Create the `uni-mail` user with `deploy/sysusers.d/uni-mail.conf`
+   and the directories with `deploy/tmpfiles.d/uni-mail.conf`.
+3. Write `/etc/uni-mail/config.json` from `deploy/config.example.json`.
+4. Install `deploy/uni-mail.service` and start it.
 5. Build the plugin with `scripts/build-plugin.sh` and install it in Hermes.
 
 The service runs under systemd with hardening: it can reach the network, its
@@ -70,7 +70,7 @@ The service reads one JSON file. The example in `deploy/config.example.json`
 shows every key:
 
 - `state_dir`: the index, the cache and the sign-in tokens.
-- `socket`: the service socket. The default is `/run/hermes-mail/mail.sock`.
+- `socket`: the service socket. The default is `/run/uni-mail/mail.sock`.
 - `export_dir`: where `export-attachment` saves files.
 - `extract_root`: `extract-attachment` writes only below this directory.
   `null` turns the command off.
@@ -92,7 +92,7 @@ to use archiving.
 Sign in to each OAuth account one time:
 
 ```sh
-hermes-mail auth login university
+uni-mail auth login university
 ```
 
 1. Open the printed URL in a browser and sign in, with MFA if the account
@@ -123,11 +123,11 @@ The plugin adds a Mail tab to the Hermes dashboard. On this tab you can:
 
 The tab keeps each setting with its owner:
 
-- The accounts belong to `hermes-maild`. The service keeps tab changes in
+- The accounts belong to `uni-maild`. The service keeps tab changes in
   `settings.json` in `stateDir`, on top of the accounts of the config file.
   A change takes effect at once, without a restart.
 - The notifications and the triage model belong to the plugin. They are
-  Hermes plugin settings in `plugins.entries.hermes-mail.settings`:
+  Hermes plugin settings in `plugins.entries.uni-mail.settings`:
   `notify`, `triage_provider` and `triage_model`, declared in the
   `config_schema` of `plugin.yaml`. The notifier reads them for each new
   event. The Hermes Desktop and TUI show the same settings.
@@ -151,8 +151,8 @@ The service applies these rules to account changes from the socket:
 Set `web_settings` to `false` to keep the accounts only in the config file.
 The notifications stay editable, because the plugin owns them.
 
-A triage provider or model other than `auxiliary.hermes_mail_triage` needs
-`plugins.entries.hermes-mail.llm.allow_provider_override` or
+A triage provider or model other than `auxiliary.uni_mail_triage` needs
+`plugins.entries.uni-mail.llm.allow_provider_override` or
 `allow_model_override` in the Hermes configuration.
 
 ## Command line
@@ -160,25 +160,25 @@ A triage provider or model other than `auxiliary.hermes_mail_triage` needs
 Every command prints JSON:
 
 ```sh
-hermes-mail status
-hermes-mail folders university
-hermes-mail list --since 2d --unread
-hermes-mail search "exam" --account university
-hermes-mail show <mail-id>
-hermes-mail attachments <mail-id>
-hermes-mail export-attachment <mail-id> <index>
-hermes-mail mark-read <mail-id> [<mail-id> ...]
-hermes-mail mark-unread <mail-id> [<mail-id> ...]
-hermes-mail archive <mail-id> [<mail-id> ...]
-hermes-mail triage-log [--account A] [--status S] [--since 2d] [--query text]
-hermes-mail triage-show <entry-id>
-hermes-mail triage-retry <entry-id>
-hermes-mail events
+uni-mail status
+uni-mail folders university
+uni-mail list --since 2d --unread
+uni-mail search "exam" --account university
+uni-mail show <mail-id>
+uni-mail attachments <mail-id>
+uni-mail export-attachment <mail-id> <index>
+uni-mail mark-read <mail-id> [<mail-id> ...]
+uni-mail mark-unread <mail-id> [<mail-id> ...]
+uni-mail archive <mail-id> [<mail-id> ...]
+uni-mail triage-log [--account A] [--status S] [--since 2d] [--query text]
+uni-mail triage-show <entry-id>
+uni-mail triage-retry <entry-id>
+uni-mail events
 ```
 
 ## Notifications
 
-The `hermes-mail-notify` unit runs `hermes mail notify` as the Hermes user.
+The `uni-mail-notify` unit runs `hermes mail notify` as the Hermes user.
 Each account has a `notify.mode`:
 
 - `none`: send nothing. The tools still read the account.
@@ -197,12 +197,12 @@ For each new message of an account with `notify.mode = "triage"`:
    summary and the attachments. The model's reasoning never reaches the chat.
 4. Code reports each failed step with a `Mail problem:` line.
 
-The triage uses the auxiliary task `hermes_mail_triage`, so it can use a
+The triage uses the auxiliary task `uni_mail_triage`, so it can use a
 different model from the main agent:
 
 ```yaml
 auxiliary:
-  hermes_mail_triage:
+  uni_mail_triage:
     provider: opencode-go
     model: glm-5.3-flash
 ```
@@ -223,7 +223,7 @@ notifier sends each new message to the Hermes gateway, and a normal agent run
 follows the policy with the tools you give it.
 
 1. The notifier writes a `dispatched` entry in the [activity log](#activity-log)
-   and sends a signed event to the `hermes-mail` route of the Hermes webhook
+   and sends a signed event to the `uni-mail` route of the Hermes webhook
    platform. The event has the account, the mail ID, a run ID and the policy
    text, but no mail text; the agent reads the mail with `mail_show`.
 2. The agent follows the policy, uses its tools, and ends with one
@@ -241,7 +241,7 @@ Set it up once:
 
 1. Put a secret in the Hermes environment, for both the gateway and the
    notifier: `WEBHOOK_SECRET=<long random text>` in `~/.hermes/.env`. The
-   notifier also reads `HERMES_MAIL_WEBHOOK_SECRET` or the plugin setting
+   notifier also reads `UNI_MAIL_WEBHOOK_SECRET` or the plugin setting
    `agent_webhook_secret`.
 2. Run `hermes mail agent-route`, and add its output to the `config.yaml` of
    Hermes under `platforms.webhook`. Then restart the gateway.
@@ -257,7 +257,7 @@ tools of the run: give it only what it needs, and describe the allowed
 actions in the policy.
 
 The plugin settings `agent_webhook_url` (the default is
-`http://127.0.0.1:8644/webhooks/hermes-mail`) and `agent_timeout_minutes`
+`http://127.0.0.1:8644/webhooks/uni-mail`) and `agent_timeout_minutes`
 change the address and the time limit.
 
 ### Activity log
@@ -272,7 +272,7 @@ log is in the service, so you can read it without a chat:
 - The Activity section of the Mail tab lists the entries with filters, shows
   the details of each, and has a "Process again" button that queues the mail
   for the notifier again.
-- `hermes-mail triage-log`, `triage-show` and `triage-retry` do the same on
+- `uni-mail triage-log`, `triage-show` and `triage-retry` do the same on
   the command line.
 - The `mail_triage_log` tool lets the agent answer "what happened to that
   mail?" in any chat.
@@ -293,7 +293,7 @@ with a warning; in `agent` mode, the agent creates tasks with its own tools.
 ```sh
 make test          # the full suite on Python 3.14, the plugin test on Python 3.12
 make lint          # ruff, also on the plugin code (target py312)
-make build-plugin  # assemble dist/hermes-mail-plugin
+make build-plugin  # assemble dist/uni-mail-plugin
 ```
 
 The tests use an in-process fake IMAP server that records every command. They

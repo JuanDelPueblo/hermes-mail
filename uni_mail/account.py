@@ -24,7 +24,7 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable
 
-from . import auth, mime
+from . import auth, events, mime
 from .config import Account
 from .imapproto import (
     ParseError, Part, attachment_parts, chunks, compact_set, imap_date, parse_bodystructure, parse_fetch, parse_list,
@@ -32,7 +32,7 @@ from .imapproto import (
 )
 from .store import Store, mail_id
 
-log = logging.getLogger("hermes_mail")
+log = logging.getLogger("uni_mail")
 
 HEADER_ITEM = f"BODY.PEEK[HEADER.FIELDS ({' '.join(mime.HEADER_FIELDS)})]"
 PREVIEW_CHARS = 4000
@@ -168,7 +168,7 @@ class MailAccount:
                 self._auth_generation = self._credential_generation()
                 self._auth_failed_at = time.time()
                 if self.status != "auth_required":
-                    self.store.add_event("mail.auth", self.name, detail=str(error))
+                    self.store.add_event("mail.auth", self.name, detail=str(error), data={"detail": str(error)})
                 self._set("auth_required", str(error))
                 continue
             except (auth.TransientAuthError, *NETWORK_ERRORS, imaplib.IMAP4.error) as error:
@@ -197,7 +197,7 @@ class MailAccount:
         self._set("error", str(error) or type(error).__name__)
         if not self.error_noticed and time.time() - self.error_since > ERROR_NOTICE_SECONDS:
             self.error_noticed = True
-            self.store.add_event("mail.error", self.name, detail=self.error)
+            self.store.add_event("mail.error", self.name, detail=self.error, data={"detail": self.error})
         self._sleep(backoff)
         return min(backoff * 2, 600.0)
 
@@ -245,7 +245,8 @@ class MailAccount:
             for record in self.fetch_metadata(imap, folder, uidvalidity, batch):
                 self.store.add(record)
                 if baseline:
-                    self.store.add_event("mail.new", self.name, record["id"])
+                    count = len(attachment_parts([Part.from_dict(value) for value in record["parts"]]))
+                    self.store.add_event("mail.new", self.name, record["id"], data=events.mail_data(record, count))
 
         for batch in chunks([uid for uid in window if uid in known], 250):
             data = _check(imap.uid("FETCH", compact_set(batch), "(UID FLAGS)"), "FETCH FLAGS")

@@ -1,4 +1,4 @@
-"""SQLite index of recent mail, the event queue and the part cache."""
+"""SQLite index of recent mail, the event log and the part cache."""
 
 from __future__ import annotations
 
@@ -8,6 +8,7 @@ import shutil
 import sqlite3
 import threading
 import time
+import uuid
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -48,47 +49,19 @@ CREATE TABLE IF NOT EXISTS events (
     mail_id TEXT NOT NULL DEFAULT '',
     detail TEXT NOT NULL DEFAULT '',
     created REAL NOT NULL,
-    done INTEGER NOT NULL DEFAULT 0
+    done INTEGER NOT NULL DEFAULT 0,
+    event_id TEXT,
+    data TEXT NOT NULL DEFAULT '{}'
 );
-CREATE TABLE IF NOT EXISTS triage (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    event_seq INTEGER UNIQUE,
-    run_id TEXT NOT NULL DEFAULT '',
-    account TEXT NOT NULL,
-    mail_id TEXT NOT NULL,
-    message_id TEXT NOT NULL DEFAULT '',
-    subject TEXT NOT NULL DEFAULT '',
-    sender TEXT NOT NULL DEFAULT '',
-    mail_date TEXT NOT NULL DEFAULT '',
-    mode TEXT NOT NULL DEFAULT '',
-    status TEXT NOT NULL,
-    decision TEXT NOT NULL DEFAULT '',
-    reason TEXT NOT NULL DEFAULT '',
-    summary TEXT NOT NULL DEFAULT '',
-    actions TEXT NOT NULL DEFAULT '[]',
-    attachments TEXT NOT NULL DEFAULT '[]',
-    error TEXT NOT NULL DEFAULT '',
-    created REAL NOT NULL,
-    finished REAL NOT NULL DEFAULT 0
-);
-CREATE INDEX IF NOT EXISTS triage_created ON triage (created);
-CREATE INDEX IF NOT EXISTS triage_run ON triage (run_id);
 """
+# PRAGMA user_version of the index. 0 is the hermes-mail format; 2 adds the
+# stable event IDs and the event data. The upgrade only adds columns, so the
+# old code can still read a database that this version upgraded.
+SCHEMA_VERSION = 2
 
 # Index columns that list and search return. The parts and the preview stay
 # out of lists to keep them small.
 SUMMARY = ("id", "account", "folder", "message_id", "date", "sender", "recipients", "cc", "subject", "read", "flagged", "size")
-
-
-# The log of the processed mail. `event_seq` is unique, so a notifier that
-# handles an event again updates the row and does not add a second one.
-TRIAGE_STATUSES = ("dispatched", "notified", "silent", "error", "no_report")
-TRIAGE_TEXT = ("run_id", "account", "mail_id", "message_id", "subject", "sender", "mail_date", "mode", "status",
-               "decision", "reason", "summary", "error")
-TRIAGE_JSON = ("actions", "attachments")
-TRIAGE_UPDATABLE = ("status", "decision", "reason", "summary", "error", "actions", "attachments")
-# The log keeps the summary and the actions, never the text of the mail.
-TRIAGE_FIELD_LIMIT = 8000
 
 
 def mail_id(account: str, folder: str, uidvalidity: int, uid: int) -> str:
@@ -106,7 +79,29 @@ class Store:
         self._db.row_factory = sqlite3.Row
         self._db.execute("PRAGMA journal_mode=WAL")
         self._db.executescript(SCHEMA)
+        self._upgrade()
         self.events_changed = threading.Condition(self._lock)
+
+    def _upgrade(self) -> None:
+        with self._lock:
+            if self._db.execute("PRAGMA user_version").fetchone()[0] >= SCHEMA_VERSION:
+                return
+            self._db.execute("BEGIN IMMEDIATE")
+            try:
+                columns = {row["name"] for row in self._db.execute("PRAGMA table_info(events)")}
+                if "event_id" not in columns:
+                    self._db.execute("ALTER TABLE events ADD COLUMN event_id TEXT")
+                if "data" not in columns:
+                    self._db.execute("ALTER TABLE events ADD COLUMN data TEXT NOT NULL DEFAULT '{}'")
+                # Events from hermes-mail get an ID once; it stays the same afterwards.
+                for row in self._db.execute("SELECT seq FROM events WHERE event_id IS NULL").fetchall():
+                    self._db.execute("UPDATE events SET event_id=? WHERE seq=?", (str(uuid.uuid4()), row["seq"]))
+                self._db.execute("CREATE UNIQUE INDEX IF NOT EXISTS events_event_id ON events (event_id)")
+                self._db.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
+                self._db.execute("COMMIT")
+            except BaseException:
+                self._db.execute("ROLLBACK")
+                raise
 
     def close(self) -> None:
         with self._lock:
@@ -231,133 +226,59 @@ class Store:
         row = self._rows("SELECT MIN(synced) AS synced FROM folders WHERE account=?", (account,))[0]
         return row["synced"] or 0.0
 
-    # Events
+    # Events. The log is append-only. `done` means that the dispatcher has
+    # stored the event (it was "acknowledged" in hermes-mail); the delivery
+    # state of each destination lives in the dispatcher's own database.
 
-    def add_event(self, kind: str, account: str, mail_id: str = "", detail: str = "") -> None:
+    def add_event(self, kind: str, account: str, mail_id: str = "", detail: str = "",
+                  data: dict[str, Any] | None = None) -> dict[str, Any]:
         with self.events_changed:
-            self._write("INSERT INTO events (kind, account, mail_id, detail, created) VALUES (?, ?, ?, ?, ?)",
-                        (kind, account, mail_id, detail, time.time()))
+            cursor = self._db.execute(
+                "INSERT INTO events (kind, account, mail_id, detail, created, event_id, data) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (kind, account, mail_id, detail, time.time(), str(uuid.uuid4()), json.dumps(data or {}, ensure_ascii=False)),
+            )
             self.events_changed.notify_all()
+            return self.event(cursor.lastrowid)
 
-    def pending_events(self, limit: int = 20) -> list[dict[str, Any]]:
-        return [dict(row) for row in self._rows("SELECT * FROM events WHERE done=0 ORDER BY seq LIMIT ?", (limit,))]
+    @staticmethod
+    def _event_row(row: sqlite3.Row) -> dict[str, Any]:
+        record = dict(row)
+        record["data"] = json.loads(record["data"] or "{}")
+        return record
 
-    def wait_events(self, timeout: float) -> list[dict[str, Any]]:
+    def event(self, seq: int) -> dict[str, Any]:
+        return self._event_row(self._rows("SELECT * FROM events WHERE seq=?", (seq,))[0])
+
+    def events_after(self, after: int, limit: int = 100) -> list[dict[str, Any]]:
+        rows = self._rows("SELECT * FROM events WHERE seq>? ORDER BY seq LIMIT ?", (after, max(1, min(limit, 1000))))
+        return [self._event_row(row) for row in rows]
+
+    def wait_events(self, after: int, timeout: float, limit: int = 100) -> list[dict[str, Any]]:
         deadline = time.monotonic() + timeout
         with self.events_changed:
             while True:
-                events = self.pending_events()
+                events = self.events_after(after, limit)
                 remaining = deadline - time.monotonic()
                 if events or remaining <= 0:
                     return events
                 self.events_changed.wait(remaining)
 
-    def ack_events(self, seqs: Iterable[int]) -> int:
-        count = 0
-        with self._lock:
-            for seq in seqs:
-                count += self._write("UPDATE events SET done=1 WHERE seq=?", (int(seq),))
-            # Keep one week of finished events for diagnosis.
-            self._write("DELETE FROM events WHERE done=1 AND created<?", (time.time() - 7 * 86400,))
-        return count
+    def event_head(self) -> dict[str, int | None]:
+        """The first and last sequence numbers, and the first event that no
+        dispatcher has stored yet (None when there is none)."""
+        row = self._rows("SELECT MIN(seq) AS first, MAX(seq) AS last, MIN(CASE WHEN done=0 THEN seq END) AS pending FROM events")[0]
+        return {"first": row["first"], "last": row["last"], "first_pending": row["pending"]}
 
-    # Triage log
+    def consume_events(self, upto: int) -> int:
+        return self._write("UPDATE events SET done=1 WHERE seq<=? AND done=0", (int(upto),))
 
-    @staticmethod
-    def _triage_row(row: sqlite3.Row) -> dict[str, Any]:
-        record = dict(row)
-        for key in TRIAGE_JSON:
-            record[key] = json.loads(record[key])
-        return record
-
-    @staticmethod
-    def _triage_values(fields: dict[str, Any]) -> dict[str, Any]:
-        values: dict[str, Any] = {}
-        for key in TRIAGE_TEXT:
-            if key in fields:
-                values[key] = str(fields[key] if fields[key] is not None else "")[:TRIAGE_FIELD_LIMIT]
-        for key in TRIAGE_JSON:
-            if key in fields:
-                values[key] = json.dumps(fields[key] if fields[key] is not None else [], ensure_ascii=False)[:TRIAGE_FIELD_LIMIT * 4]
-        return values
-
-    def triage_record(self, fields: dict[str, Any], event_seq: int | None = None) -> int:
-        """Add a row to the triage log, or update the row of the same event. Return its ID."""
-        values = self._triage_values(fields)
-        now = time.time()
-        with self._lock:
-            if event_seq is not None:
-                rows = self._rows("SELECT id FROM triage WHERE event_seq=?", (event_seq,))
-                if rows:
-                    identifier = rows[0]["id"]
-                    self.triage_update(identifier, {key: value for key, value in fields.items() if key in TRIAGE_UPDATABLE})
-                    return identifier
-            columns = ["event_seq", "created", "finished", *values]
-            finished = now if values.get("status") not in (None, "dispatched") else 0.0
-            self._write(
-                f"INSERT INTO triage ({', '.join(columns)}) VALUES ({', '.join('?' * len(columns))})",
-                (event_seq, now, finished, *values.values()),
-            )
-            return self._rows("SELECT last_insert_rowid() AS id")[0]["id"]
-
-    def triage_update(self, identifier: int, fields: dict[str, Any], expect_status: str = "") -> bool:
-        """Update a log row. With `expect_status`, only a row that still has this status changes. Return
-        whether a row changed."""
-        values = self._triage_values({key: value for key, value in fields.items() if key in TRIAGE_UPDATABLE})
-        condition, extra = ("AND status=?", (expect_status,)) if expect_status else ("", ())
-        if not values:
-            return bool(self._rows(f"SELECT 1 FROM triage WHERE id=? {condition}", (identifier, *extra)))
-        assignments = [f"{key}=?" for key in values]
-        args: list[Any] = list(values.values())
-        if values.get("status") not in (None, "dispatched"):
-            assignments.append("finished=?")
-            args.append(time.time())
-        return self._write(f"UPDATE triage SET {', '.join(assignments)} WHERE id=? {condition}", (*args, identifier, *extra)) > 0
-
-    def triage_claim(self, run_id: str, fields: dict[str, Any]) -> dict[str, Any] | str:
-        """Complete the row of an agent run that is still open, once. Return the row, or "unknown" or
-        "closed" when there is no open row for the run ID."""
-        with self._lock:
-            rows = self._rows("SELECT * FROM triage WHERE run_id=? AND run_id<>'' ORDER BY id DESC LIMIT 1", (run_id,))
-            if not rows:
-                return "unknown"
-            if rows[0]["status"] != "dispatched":
-                return "closed"
-            self.triage_update(rows[0]["id"], fields, expect_status="dispatched")
-            return self._triage_row(self._rows("SELECT * FROM triage WHERE id=?", (rows[0]["id"],))[0])
-
-    def triage_get(self, identifier: int) -> dict[str, Any] | None:
-        rows = self._rows("SELECT * FROM triage WHERE id=?", (identifier,))
-        return self._triage_row(rows[0]) if rows else None
-
-    def triage_query(
-        self, *, account: str = "", status: str = "", since: float = 0.0, text: str = "", mail_id: str = "",
-        limit: int = 50, offset: int = 0,
-    ) -> list[dict[str, Any]]:
-        clauses, args = [], []
-        for column, value in (("account", account), ("status", status), ("mail_id", mail_id)):
-            if value:
-                clauses.append(f"{column}=?")
-                args.append(value)
-        if since:
-            clauses.append("created>=?")
-            args.append(since)
-        if text:
-            pattern = "%" + text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
-            clauses.append("(sender LIKE ? ESCAPE '\\' OR subject LIKE ? ESCAPE '\\' OR summary LIKE ? ESCAPE '\\')")
-            args += [pattern, pattern, pattern]
-        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
-        rows = self._rows(
-            f"SELECT * FROM triage {where} ORDER BY id DESC LIMIT ? OFFSET ?",
-            (*args, max(1, min(limit, 500)), max(0, offset)),
-        )
-        return [self._triage_row(row) for row in rows]
-
-    def triage_prune(self, days: int) -> int:
-        """Delete the log rows that are older than `days`. 0 keeps every row."""
+    def prune_events(self, days: int) -> int:
+        """Delete the events that are older than `days`. 0 keeps every event.
+        The newest event always stays, so that the sequence never restarts."""
         if days <= 0:
             return 0
-        return self._write("DELETE FROM triage WHERE created<?", (time.time() - days * 86400,))
+        return self._write("DELETE FROM events WHERE created<? AND seq<(SELECT MAX(seq) FROM events)", (time.time() - days * 86400,))
+
 
     # Part cache
 

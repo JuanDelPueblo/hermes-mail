@@ -8,7 +8,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parents[1]))
 
-from hermes_mail import config, imapproto, mime  # noqa: E402
+from uni_mail import config, imapproto, mime  # noqa: E402
 
 
 class ParseFetchTest(unittest.TestCase):
@@ -150,13 +150,13 @@ class MimeTest(unittest.TestCase):
 
 class ConfigTest(unittest.TestCase):
     def base(self, **account):
-        return {"state_dir": "/var/lib/hermes-mail", "accounts": {"uni": {"provider": "microsoft", "address": "a@b.edu", **account}}}
+        return {"state_dir": "/var/lib/uni-mail", "accounts": {"uni": {"provider": "microsoft", "address": "a@b.edu", **account}}}
 
     def test_defaults(self):
         cfg = config.parse(self.base())
         account = cfg.accounts["uni"]
         self.assertEqual((account.auth, account.folders, account.sync_days, account.notify.mode), ("oauth", ("INBOX",), 7, "none"))
-        self.assertEqual(str(cfg.socket), "/run/hermes-mail/mail.sock")
+        self.assertEqual(str(cfg.socket), "/run/uni-mail/mail.sock")
 
     def test_archive_folder_defaults_by_provider(self):
         microsoft = config.parse(self.base()).accounts["uni"]
@@ -181,7 +181,7 @@ class ConfigTest(unittest.TestCase):
             config.parse(self.base(notify={"mode": "loud"}))
 
     def test_a_task_command_is_ignored_with_a_warning(self):
-        with self.assertLogs("hermes_mail", "WARNING") as logs:
+        with self.assertLogs("uni_mail", "WARNING") as logs:
             notify = config.parse(self.base(notify={"mode": "triage", "target": "d:1", "task_command": ["/bin/task"]})).accounts["uni"].notify
         self.assertIn("task_command was removed", logs.output[0])
         self.assertEqual(notify.mode, "triage")

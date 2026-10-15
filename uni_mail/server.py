@@ -1,4 +1,8 @@
-"""hermes-maild: the service. It runs one worker per account and a Unix socket.
+"""uni-maild: the mail daemon. It runs one worker per account and a Unix socket.
+
+The daemon owns the IMAP connections, the sign-in tokens, the index and the
+event log. It makes no decision about mail and runs no external program;
+`uni-mail dispatch` delivers its events.
 
 Protocol: the client sends one JSON object and a newline. The service sends
 one JSON object and a newline, then closes the connection. Every response has
@@ -8,10 +12,12 @@ one JSON object and a newline, then closes the connection. Every response has
 from __future__ import annotations
 
 import argparse
+import fcntl
 import json
 import logging
 import os
 import signal
+import socket
 import socketserver
 import sys
 import threading
@@ -19,14 +25,18 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable
 
-from . import auth, config, mime, settings
+from . import auth, config, events, mime, settings
 from .account import MailAccount, MailError, attachment_part, attachments, default_imap_factory
-from .store import TRIAGE_STATUSES, Store
+from .imapproto import Part, attachment_parts
+from .store import Store
 
-log = logging.getLogger("hermes_mail")
+log = logging.getLogger("uni_mail")
 
 REQUEST_LIMIT = 1024 * 1024
 MAX_WAIT = 300
+# The socket of a hermes-mail daemon. uni-maild does not start while one
+# answers there, so the two never sync the same accounts side by side.
+LEGACY_SOCKET = Path("/run/hermes-mail/mail.sock")
 
 
 class RequestError(Exception):
@@ -67,7 +77,7 @@ class Service:
         self._started = False
         self._reconfigure = threading.Lock()
         self.apply()
-        self.store.triage_prune(cfg.triage_retention_days)
+        self.store.prune_events(cfg.event_retention_days)
 
     def _configured(self) -> dict[str, config.Account]:
         if self.settings is None:
@@ -161,7 +171,7 @@ class Service:
         return {"accounts": accounts}
 
     def op_accounts(self, _: dict[str, Any]) -> dict[str, Any]:
-        return {"accounts": {name: {"address": account.cfg.address, "notify": account.cfg.notify.to_dict()}
+        return {"accounts": {name: {"address": account.cfg.address, "provider": account.cfg.provider}
                              for name, account in self.accounts.items()}}
 
     def op_folders(self, request: dict[str, Any]) -> dict[str, Any]:
@@ -290,100 +300,42 @@ class Service:
             response["error"] = "; ".join(f"{key}: {value.get('error', 'failed')}" for key, value in failed.items())
         return response
 
+    # The event log. `uni-mail dispatch` reads it with a cursor.
+
+    def _event_out(self, row: dict[str, Any]) -> dict[str, Any]:
+        data = row["data"]
+        if not data:
+            # An event from hermes-mail has no data. Fill it from the index while the mail is there.
+            if row["kind"] == "mail.new":
+                record = self.store.get(row["mail_id"])
+                if record is not None:
+                    count = len(attachment_parts([Part.from_dict(value) for value in record["parts"]]))
+                    data = events.mail_data(record, count)
+            elif row["detail"]:
+                data = {"detail": row["detail"]}
+        return events.build(event_id=row["event_id"], event_type=row["kind"], seq=row["seq"], account=row["account"],
+                            mail_id=row["mail_id"], created=row["created"], data=data)
+
     def op_events(self, request: dict[str, Any]) -> dict[str, Any]:
-        timeout = min(max(float(request.get("timeout", 0)), 0.0), MAX_WAIT)
-        return {"events": self.store.wait_events(timeout) if timeout else self.store.pending_events()}
+        """The events after the sequence number `after`, oldest first. With
+        `timeout`, wait up to that many seconds for one."""
+        after = int(request.get("after") or 0)
+        limit = int(request.get("limit") or 100)
+        timeout = min(max(float(request.get("timeout") or 0), 0.0), MAX_WAIT)
+        rows = self.store.wait_events(after, timeout, limit) if timeout else self.store.events_after(after, limit)
+        return {"events": [self._event_out(row) for row in rows], **self.store.event_head()}
 
-    # The triage log. The notifier writes it, and the CLI, the plugin tool and the dashboard read it.
+    def op_event_head(self, _: dict[str, Any]) -> dict[str, Any]:
+        return self.store.event_head()
 
-    @staticmethod
-    def _triage_out(row: dict[str, Any]) -> dict[str, Any]:
-        def iso(value: float) -> str:
-            return datetime.fromtimestamp(value, timezone.utc).isoformat() if value else ""
-
-        return {**{key: value for key, value in row.items() if key != "event_seq"}, "created": iso(row["created"]), "finished": iso(row["finished"])}
-
-    @staticmethod
-    def _triage_status(value: Any) -> str:
-        if value not in TRIAGE_STATUSES:
-            raise RequestError(f"status must be one of {', '.join(TRIAGE_STATUSES)}")
-        return value
-
-    def op_triage_record(self, request: dict[str, Any]) -> dict[str, Any]:
-        entry = request.get("entry")
-        if not isinstance(entry, dict):
-            raise RequestError("entry must be a JSON object")
-        for key in ("account", "mail_id"):
-            if not isinstance(entry.get(key), str) or not entry[key]:
-                raise RequestError(f"entry.{key} is required")
-        self._triage_status(entry.get("status"))
-        seq = request.get("event_seq")
-        if seq is not None and not isinstance(seq, int):
-            raise RequestError("event_seq must be a number")
-        identifier = self.store.triage_record(entry, seq)
-        self.store.triage_prune(self.cfg.triage_retention_days)
-        return {"id": identifier}
-
-    def op_triage_update(self, request: dict[str, Any]) -> dict[str, Any]:
-        fields = request.get("fields")
-        if not isinstance(fields, dict):
-            raise RequestError("fields must be a JSON object")
-        if "status" in fields:
-            self._triage_status(fields["status"])
-        identifier = int(request.get("id"))
-        expect = str(request.get("expect_status") or "")
-        if not self.store.triage_update(identifier, fields, expect_status=expect):
-            raise RequestError(f"no triage entry {identifier}" + (f" with the status {expect}" if expect else ""))
-        return {"id": identifier}
-
-    def op_triage_report(self, request: dict[str, Any]) -> dict[str, Any]:
-        """The end of an agent run: complete the open entry of this run ID. A run can report once."""
-        run_id = str(request.get("run_id") or "")
-        fields = request.get("fields")
-        if not run_id or not isinstance(fields, dict):
-            raise RequestError("run_id and fields are required")
-        if fields.get("status") not in ("notified", "silent"):
-            raise RequestError("the status of a report must be notified or silent")
-        result = self.store.triage_claim(run_id, fields)
-        if result == "unknown":
-            raise RequestError("unknown run ID; a report needs the run ID of the mail that the notifier sent")
-        if result == "closed":
-            raise RequestError("this run already reported or timed out")
-        return self._triage_out(result)
-
-    def op_triage_list(self, request: dict[str, Any]) -> dict[str, Any]:
-        status = str(request.get("status") or "")
-        if status:
-            self._triage_status(status)
-        since = datetime.fromisoformat(parse_time(request["since"])).timestamp() if request.get("since") else 0.0
-        rows = self.store.triage_query(
-            account=str(request.get("account") or ""), status=status, since=since, text=str(request.get("query") or ""),
-            mail_id=str(request.get("mail_id") or ""), limit=int(request.get("limit") or 50), offset=int(request.get("offset") or 0),
-        )
-        return {"count": len(rows), "entries": [self._triage_out(row) for row in rows],
-                "retention_days": self.cfg.triage_retention_days}
-
-    def op_triage_show(self, request: dict[str, Any]) -> dict[str, Any]:
-        row = self.store.triage_get(int(request.get("id")))
-        if row is None:
-            raise RequestError(f"no triage entry {request.get('id')}")
-        return self._triage_out(row)
-
-    def op_triage_retry(self, request: dict[str, Any]) -> dict[str, Any]:
-        """Queue a new mail.new event for the mail of a log entry, so the notifier handles the mail again."""
-        row = self.store.triage_get(int(request.get("id")))
-        if row is None:
-            raise RequestError(f"no triage entry {request.get('id')}")
-        if self.store.get(row["mail_id"]) is None:
-            raise RequestError("the mail is older than the sync window, so it cannot be processed again")
-        self.store.add_event("mail.new", row["account"], row["mail_id"], f"retry of triage entry {row['id']}")
-        return {"id": row["id"], "mail_id": row["mail_id"]}
-
-    def op_ack(self, request: dict[str, Any]) -> dict[str, Any]:
-        seqs = request.get("seqs")
-        if not isinstance(seqs, list):
-            raise RequestError("seqs must be a list of event numbers")
-        return {"acked": self.store.ack_events(seqs)}
+    def op_events_consumed(self, request: dict[str, Any]) -> dict[str, Any]:
+        """The dispatcher has stored every event up to `upto`."""
+        upto = request.get("upto")
+        if not isinstance(upto, int) or isinstance(upto, bool):
+            raise RequestError("upto must be an event sequence number")
+        count = self.store.consume_events(upto)
+        self.store.prune_events(self.cfg.event_retention_days)
+        return {"consumed": count}
 
     def op_auth_begin(self, request: dict[str, Any]) -> dict[str, Any]:
         account = self._account(str(request.get("account") or ""))
@@ -434,10 +386,10 @@ class Service:
     def op_settings_delete(self, request: dict[str, Any]) -> dict[str, Any]:
         name = str(request.get("account") or "")
         target = self._settings()
-        dashboard_only = name not in target.base
+        socket_only = name not in target.base
         target.delete(name)
         self.apply()
-        if dashboard_only:
+        if socket_only:
             self.tokens.path(name).unlink(missing_ok=True)
         return {"account": name}
 
@@ -463,6 +415,35 @@ class Service:
             log.exception("request %s failed", request.get("op"))
             return {"ok": False, "error": f"internal error: {type(error).__name__}: {error}"}
         return {"ok": True, **result}
+
+
+def legacy_daemon_running(path: Path = LEGACY_SOCKET) -> bool:
+    """Whether a hermes-mail daemon answers on its socket. A socket that we may
+    not open counts as running; a stale socket file does not."""
+    if not path.is_socket():
+        return False
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as probe:
+        probe.settimeout(2)
+        try:
+            probe.connect(str(path))
+        except PermissionError:
+            return True
+        except OSError:
+            return False
+    return True
+
+
+def lock_state(state_dir: Path):
+    """Hold an exclusive lock on the state directory, so that a second daemon
+    with the same state stops at once. The lock goes with the process."""
+    state_dir.mkdir(mode=0o750, parents=True, exist_ok=True)
+    handle = open(state_dir / "daemon.lock", "a")
+    try:
+        fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        handle.close()
+        raise config.ConfigError(f"another uni-maild uses {state_dir}") from None
+    return handle
 
 
 def _write_new(path: Path, data: bytes, mode: int) -> None:
@@ -508,16 +489,20 @@ class SocketServer(socketserver.ThreadingUnixStreamServer):
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(prog="hermes-maild", description="IMAP index service for Hermes")
-    parser.add_argument("--config", required=True)
-    parser.add_argument("--log-level", default=os.environ.get("HERMES_MAIL_LOG_LEVEL", "INFO"))
+    parser = argparse.ArgumentParser(prog="uni-maild", description="uni-mail daemon: IMAP index, socket API and event log")
+    parser.add_argument("--config", default=os.environ.get("UNI_MAIL_CONFIG", config.DEFAULT_CONFIG))
+    parser.add_argument("--log-level", default=os.environ.get("UNI_MAIL_LOG_LEVEL", "INFO"))
     args = parser.parse_args(argv)
     logging.basicConfig(level=args.log_level.upper(), stream=sys.stderr, format="%(levelname)s %(message)s")
     if sys.version_info < (3, 14):
-        log.error("hermes-maild needs Python 3.14 or later for IMAP IDLE")
+        log.error("uni-maild needs Python 3.14 or later for IMAP IDLE")
+        return 1
+    if legacy_daemon_running() and os.environ.get("UNI_MAIL_ALLOW_LEGACY") != "1":
+        log.error("a hermes-mail daemon is running (%s); stop and disable it first: see docs/MIGRATION.md", LEGACY_SOCKET)
         return 1
     try:
         cfg = config.load(args.config)
+        lock = lock_state(cfg.state_dir)  # noqa: F841 - held until the process ends
         service = Service(cfg)
     except config.ConfigError as error:
         log.error("%s", error)
@@ -530,7 +515,7 @@ def main(argv: list[str] | None = None) -> int:
     signal.signal(signal.SIGTERM, shutdown)
     signal.signal(signal.SIGINT, shutdown)
     service.start()
-    log.info("hermes-maild: %d account(s), socket %s", len(service.accounts), cfg.socket)
+    log.info("uni-maild: %d account(s), socket %s", len(service.accounts), cfg.socket)
     try:
         server.serve_forever()
     finally:

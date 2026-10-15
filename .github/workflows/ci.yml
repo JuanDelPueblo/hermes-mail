@@ -25,8 +25,8 @@ jobs:
       - name: Check the pip package
         run: |
           python -m pip install --quiet .
-          hermes-mail --help > /dev/null
-          hermes-maild --help > /dev/null
+          uni-mail --help > /dev/null
+          uni-maild --help > /dev/null
 
   plugin-tests:
     runs-on: ubuntu-latest
@@ -58,6 +58,6 @@ jobs:
         run: |
           uv sync --python 3.12
           export HERMES_HOME="$(mktemp -d)"
-          plugin="$(readlink -f ../dist/hermes-mail-plugin)"
+          plugin="$(readlink -f ../dist/uni-mail-plugin)"
           uv run --no-sync hermes plugins validate "$plugin"
           uv run --no-sync hermes plugins doctor "$plugin" --ci

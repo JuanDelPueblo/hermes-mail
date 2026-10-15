@@ -3,21 +3,27 @@ requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "hermes-mail"
-version = "0.1.0"
-description = "IMAP index service and command line client for the Hermes agent"
+name = "uni-mail"
+version = "0.2.0"
+description = "IMAP/OAuth mail data provider: an index daemon, a CLI, an event dispatcher and an optional MCP server"
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
 requires-python = ">=3.14"
 authors = [{ name = "JuanDelPueblo" }]
+# The daemon, the CLI and the dispatcher use only the standard library.
+dependencies = []
+
+[project.optional-dependencies]
+mcp = ["mcp>=1.10"]
 
 [project.urls]
-Homepage = "https://github.com/JuanDelPueblo/hermes-mail"
+Homepage = "https://github.com/JuanDelPueblo/uni-mail"
 
 [project.scripts]
-hermes-mail = "hermes_mail.cli:main"
-hermes-maild = "hermes_mail.server:main"
+uni-mail = "uni_mail.cli:main"
+uni-maild = "uni_mail.server:main"
+uni-mail-mcp = "uni_mail.mcp_server:main"
 
 [tool.setuptools]
-packages = ["hermes_mail"]
+packages = ["uni_mail", "uni_mail.dispatch"]

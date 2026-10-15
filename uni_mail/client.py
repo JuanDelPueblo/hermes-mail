@@ -1,7 +1,6 @@
-"""Socket client for hermes-maild. The CLI and the Hermes plugin use it.
+"""Socket client for uni-maild. The CLI, the dispatcher and the MCP server use it.
 
-This module must also run on the Python of Hermes, so it uses only the
-standard library and no Python 3.14 features.
+It uses only the standard library, so that other programs can copy it.
 """
 
 from __future__ import annotations
@@ -11,7 +10,7 @@ import os
 import socket
 from typing import Any, Dict, List, Optional
 
-DEFAULT_SOCKET = "/run/hermes-mail/mail.sock"
+DEFAULT_SOCKET = "/run/uni-mail/mail.sock"
 RESPONSE_LIMIT = 64 * 1024 * 1024
 
 
@@ -20,7 +19,7 @@ class MailServiceError(Exception):
 
 
 def socket_path(configured: str = "") -> str:
-    return configured or os.environ.get("HERMES_MAIL_SOCKET", "") or DEFAULT_SOCKET
+    return configured or os.environ.get("UNI_MAIL_SOCKET", "") or DEFAULT_SOCKET
 
 
 class Client:
@@ -97,37 +96,15 @@ class Client:
     def archive(self, mail_ids: List[str]) -> Dict[str, Any]:
         return self.request({"op": "archive", "ids": list(mail_ids)})
 
-    def events(self, timeout: float = 0) -> List[Dict[str, Any]]:
-        return self.request({"op": "events", "timeout": timeout}, timeout=timeout + 30)["events"]
+    def events(self, after: int = 0, timeout: float = 0, limit: int = 100) -> Dict[str, Any]:
+        """The events after the sequence number `after`, and the head of the log."""
+        return self.request({"op": "events", "after": after, "timeout": timeout, "limit": limit}, timeout=timeout + 30)
 
-    def ack(self, seqs: List[int]) -> int:
-        return self.request({"op": "ack", "seqs": list(seqs)})["acked"]
+    def event_head(self) -> Dict[str, Any]:
+        return self.request({"op": "event_head"})
 
-    # The triage log.
-
-    def triage_record(self, entry: Dict[str, Any], event_seq: Optional[int] = None) -> int:
-        payload: Dict[str, Any] = {"op": "triage_record", "entry": entry}
-        if event_seq is not None:
-            payload["event_seq"] = int(event_seq)
-        return self.request(payload)["id"]
-
-    def triage_update(self, entry_id: int, fields: Dict[str, Any], expect_status: str = "") -> None:
-        payload: Dict[str, Any] = {"op": "triage_update", "id": entry_id, "fields": fields}
-        if expect_status:
-            payload["expect_status"] = expect_status
-        self.request(payload)
-
-    def triage_report(self, run_id: str, fields: Dict[str, Any]) -> Dict[str, Any]:
-        return self.request({"op": "triage_report", "run_id": run_id, "fields": fields})
-
-    def triage_list(self, **filters: Any) -> Dict[str, Any]:
-        return self.request({"op": "triage_list", **{key: value for key, value in filters.items() if value not in (None, "")}})
-
-    def triage_show(self, entry_id: int) -> Dict[str, Any]:
-        return self.request({"op": "triage_show", "id": int(entry_id)})
-
-    def triage_retry(self, entry_id: int) -> Dict[str, Any]:
-        return self.request({"op": "triage_retry", "id": int(entry_id)})
+    def events_consumed(self, upto: int) -> int:
+        return self.request({"op": "events_consumed", "upto": int(upto)})["consumed"]
 
     def auth_begin(self, account: str) -> Dict[str, Any]:
         return self.request({"op": "auth_begin", "account": account})
