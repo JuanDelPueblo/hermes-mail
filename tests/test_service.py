@@ -6,6 +6,7 @@ import dataclasses
 import imaplib
 import json
 import re
+import sqlite3
 import sys
 import tempfile
 import threading
@@ -174,6 +175,17 @@ class ServiceTest(unittest.TestCase):
         service = self.make_service()
         self.assertFalse(service.handle({"op": "events_consumed", "upto": "all"})["ok"])
         self.assertFalse(service.handle({"op": "ack", "seqs": [1]})["ok"])
+
+    def test_a_message_is_never_indexed_without_its_event(self):
+        service = self.make_service()
+        record = {"id": "uni.0123456789abcdef", "account": "uni", "folder": "INBOX", "uidvalidity": 1, "uid": 9, "parts": []}
+        with mock.patch.object(service.store, "_insert_event", side_effect=sqlite3.OperationalError("database is locked")):
+            with self.assertRaises(sqlite3.OperationalError):
+                service.store.add(record, ("mail.new", {"subject": "x"}))
+        # Nothing was written, so the next sync sees the UID as new and makes the event then.
+        self.assertIsNone(service.store.get(record["id"]))
+        service.store.add(record, ("mail.new", {"subject": "x"}))
+        self.assertEqual([row["mail_id"] for row in service.store.events_after(0)], [record["id"]])
 
     def test_event_log_is_pruned_but_keeps_the_newest_event(self):
         service = self.make_service()

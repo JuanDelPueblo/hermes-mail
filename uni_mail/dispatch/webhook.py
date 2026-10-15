@@ -51,7 +51,7 @@ def verify(secret: str, headers: dict[str, str], body: bytes, now: float | None 
     """Check a received webhook. `headers` must have lower-case names."""
     timestamp = headers.get("x-uni-mail-timestamp", "")
     delivery_id = headers.get("x-uni-mail-delivery-id", "")
-    if not timestamp.isdigit() or not delivery_id:
+    if not (timestamp.isascii() and timestamp.isdigit()) or not delivery_id:
         return False
     if abs((time.time() if now is None else now) - int(timestamp)) > tolerance:
         return False
@@ -78,8 +78,8 @@ def address_problem(address: ipaddress.IPv4Address | ipaddress.IPv6Address, allo
     return ""
 
 
-def resolve(host: str, port: int, allow_private: bool) -> str:
-    """Resolve the host and return the first address. Refuse the host when any address is not allowed."""
+def resolve(host: str, port: int, allow_private: bool) -> list[str]:
+    """Resolve the host and return its addresses. Refuse the host when any address is not allowed."""
     try:
         infos = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
     except socket.gaierror as error:
@@ -91,25 +91,36 @@ def resolve(host: str, port: int, allow_private: bool) -> str:
             raise ConfigError(f"{host} resolves to {value}, {problem}")
     if not addresses:
         raise OSError(f"{host} has no address")
-    return addresses[0]
+    return addresses
+
+
+def _connect(addresses: list[str], port: int, timeout: float) -> socket.socket:
+    """Connect to the first checked address that answers, in the resolver's order."""
+    error: OSError | None = None
+    for address in addresses:
+        try:
+            return socket.create_connection((address, port), timeout)
+        except OSError as failure:
+            error = failure
+    raise error or OSError("no address")
 
 
 class _Pinned(http.client.HTTPConnection):
-    def __init__(self, host: str, port: int, address: str, timeout: float):
+    def __init__(self, host: str, port: int, addresses: list[str], timeout: float):
         super().__init__(host, port, timeout=timeout)
-        self.address = address
+        self.addresses = addresses
 
     def connect(self) -> None:
-        self.sock = socket.create_connection((self.address, self.port), self.timeout)
+        self.sock = _connect(self.addresses, self.port, self.timeout)
 
 
 class _PinnedTLS(http.client.HTTPSConnection):
-    def __init__(self, host: str, port: int, address: str, timeout: float):
+    def __init__(self, host: str, port: int, addresses: list[str], timeout: float):
         super().__init__(host, port, timeout=timeout, context=ssl.create_default_context())
-        self.address = address
+        self.addresses = addresses
 
     def connect(self) -> None:
-        raw = socket.create_connection((self.address, self.port), self.timeout)
+        raw = _connect(self.addresses, self.port, self.timeout)
         # The certificate must match the host name, not the address.
         self.sock = self._context.wrap_socket(raw, server_hostname=self.host)
 
@@ -144,7 +155,7 @@ class WebhookSink:
         tls = parts.scheme == "https"
         port = parts.port or (443 if tls else 80)
         try:
-            address = resolve(parts.hostname or "", port, destination.allow_private_network)
+            addresses = resolve(parts.hostname or "", port, destination.allow_private_network)
         except ConfigError as error:
             return Result("dead", error=f"refused: {error}")
         except OSError as error:
@@ -161,7 +172,7 @@ class WebhookSink:
             "X-Uni-Mail-Signature": signature(secret, timestamp, delivery_id, body),
         }
         target = urllib.parse.urlunsplit(("", "", parts.path or "/", parts.query, ""))
-        connection = (_PinnedTLS if tls else _Pinned)(parts.hostname or "", port, address, destination.timeout_seconds)
+        connection = (_PinnedTLS if tls else _Pinned)(parts.hostname or "", port, addresses, destination.timeout_seconds)
         try:
             connection.request("POST", target, body=body, headers=headers)
             response = connection.getresponse()

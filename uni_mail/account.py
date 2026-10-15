@@ -243,10 +243,11 @@ class MailAccount:
 
         for batch in chunks([uid for uid in window if uid not in known], 25):
             for record in self.fetch_metadata(imap, folder, uidvalidity, batch):
-                self.store.add(record)
+                event = None
                 if baseline:
                     count = len(attachment_parts([Part.from_dict(value) for value in record["parts"]]))
-                    self.store.add_event("mail.new", self.name, record["id"], data=events.mail_data(record, count))
+                    event = ("mail.new", events.mail_data(record, count))
+                self.store.add(record, event)
 
         for batch in chunks([uid for uid in window if uid in known], 250):
             data = _check(imap.uid("FETCH", compact_set(batch), "(UID FLAGS)"), "FETCH FLAGS")

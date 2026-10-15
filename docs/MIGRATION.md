@@ -153,6 +153,10 @@ the history, or drop it.
   index, so uni-maild finds it on its first sync and creates `mail.new` for it.
 - Unacknowledged hermes-mail events are copied with the index and delivered
   once by a fresh dispatcher (it starts at the first event with `done = 0`).
+  hermes-mail acknowledged events one by one, so an event that it had already
+  acknowledged after the first unacknowledged one is delivered again (with
+  its new event ID). Check `uni-mail events` before you start the dispatcher
+  if that matters.
 - uni-maild refuses to start while a hermes-mail daemon answers on
   `/run/hermes-mail/mail.sock` (override: `UNI_MAIL_ALLOW_LEGACY=1`), the unit
   conflicts with the hermes-mail units, and a lock file stops a second

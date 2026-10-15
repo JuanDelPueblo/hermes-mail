@@ -201,14 +201,16 @@ def build_server(socket: str = "", log_level: str = "WARNING") -> Any:
 
 
 class BearerAuth:
-    """ASGI middleware: a request needs `Authorization: Bearer <token>`. Other scopes (lifespan) pass through."""
+    """ASGI middleware: a request needs `Authorization: Bearer <token>`. Only the lifespan scope passes without one."""
 
     def __init__(self, app: Any, token: str):
         self.app = app
         self.token = token.encode()
 
     async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
-        if scope["type"] == "http" and not self.allowed(scope):
+        if scope["type"] != "lifespan" and not self.allowed(scope):
+            if scope["type"] != "http":
+                return  # for example a websocket: closed without an answer
             body = b"unauthorized"
             await send({"type": "http.response.start", "status": 401, "headers": [
                 (b"www-authenticate", b"Bearer"), (b"content-type", b"text/plain"),

@@ -75,7 +75,7 @@ Keys of every destination:
 | `type` | (required) | `command` or `webhook`. |
 | `events` | `["mail.new"]` | Event types, with shell patterns such as `mail.*`. |
 | `accounts` | all | Only events of these accounts. |
-| `enabled` | `true` | `false` keeps the destination's history but stops its deliveries. |
+| `enabled` | `true` | `false` pauses the destination: its history stays, nothing new is queued for it, and its pending deliveries wait. Events that arrive while it is disabled are not queued later; use `uni-mail dispatch replay <destination> --since ...` after enabling it again. |
 | `timeout_seconds` | 60 (command), 15 (webhook) | The limit of one attempt. |
 | `retry` | `dispatch.retry` | `max_attempts`, `initial_seconds`, `max_seconds` for this destination. |
 
@@ -146,7 +146,7 @@ import hashlib, hmac, time
 def verify(secret: str, headers, body: bytes) -> bool:
     stamp = headers["X-Uni-Mail-Timestamp"]
     delivery = headers["X-Uni-Mail-Delivery-Id"]
-    if not stamp.isdigit() or abs(time.time() - int(stamp)) > 300:
+    if not (stamp.isascii() and stamp.isdigit()) or abs(time.time() - int(stamp)) > 300:
         return False
     expected = "v1=" + hmac.new(secret.encode(), f"{stamp}.{delivery}.".encode() + body, hashlib.sha256).hexdigest()
     return any(hmac.compare_digest(expected, value.strip()) for value in headers["X-Uni-Mail-Signature"].split(","))
@@ -170,8 +170,8 @@ stops it inside that window.
 - `https` is required, except to a loopback address or with `allow_http`.
 - The URL cannot hold a user name or password.
 - The host is resolved at each attempt, and every address must be allowed;
-  the connection goes to the checked address (no second lookup), with the
-  certificate checked against the host name.
+  the connection goes to the checked addresses in order (no second lookup),
+  with the certificate checked against the host name.
 - Link-local addresses (including cloud metadata services), multicast and
   unspecified addresses are always refused. Private, loopback, carrier-grade
   NAT and unique-local addresses need `allow_private_network: true`.

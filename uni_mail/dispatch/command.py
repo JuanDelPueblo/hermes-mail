@@ -12,7 +12,8 @@ from __future__ import annotations
 import os
 import signal
 import subprocess
-from typing import Any
+import tempfile
+from typing import IO, Any
 
 from .config import Destination
 from .sinks import SECRET_NAME, Result, redact
@@ -20,6 +21,8 @@ from .sinks import SECRET_NAME, Result, redact
 BASE_ENV = ("PATH", "LANG", "LC_ALL", "TZ")
 DEFAULT_PATH = "/usr/local/bin:/usr/bin:/bin"
 KILL_GRACE = 5
+# Read this much of the end of each output; the stored text is shorter (sinks.OUTPUT_LIMIT).
+TAIL_BYTES = 65536
 
 
 class CommandSink:
@@ -46,25 +49,30 @@ class CommandSink:
         return env
 
     def deliver(self, event: dict[str, Any], body: bytes, delivery_id: str, attempt: int) -> Result:
+        """Run the program. stdin, stdout and stderr are temporary files, not
+        pipes: the result is the exit of the program itself, so a background
+        child that keeps a pipe open can neither hold up nor fail a delivery."""
         destination = self.destination
-        try:
-            process = subprocess.Popen(
-                list(destination.argv), stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                env=self.environment(event, delivery_id, attempt), cwd=destination.working_directory or None,
-                start_new_session=True, close_fds=True,
-            )
-        except OSError as error:
-            return Result("retry", error=f"cannot run {destination.argv[0]}: {error.strerror or error}")
-        timed_out = False
-        try:
-            stdout, stderr = process.communicate(body, timeout=destination.timeout_seconds)
-        except subprocess.TimeoutExpired:
-            timed_out = True
-            stdout, stderr = self._stop(process)
-        output = self._output(stdout, stderr)
+        with tempfile.TemporaryFile() as stdin, tempfile.TemporaryFile() as stdout, tempfile.TemporaryFile() as stderr:
+            stdin.write(body)
+            stdin.seek(0)
+            try:
+                process = subprocess.Popen(
+                    list(destination.argv), stdin=stdin, stdout=stdout, stderr=stderr,
+                    env=self.environment(event, delivery_id, attempt), cwd=destination.working_directory or None,
+                    start_new_session=True, close_fds=True,
+                )
+            except OSError as error:
+                return Result("retry", error=f"cannot run {destination.argv[0]}: {error.strerror or error}")
+            try:
+                code = process.wait(timeout=destination.timeout_seconds)
+                timed_out = False
+            except subprocess.TimeoutExpired:
+                timed_out = True
+                code = self._stop(process)
+            output = self._output(stdout, stderr)
         if timed_out:
             return Result("retry", error=f"timed out after {destination.timeout_seconds:g} s", output=output)
-        code = process.returncode
         if code == 0:
             return Result("delivered", code=0, output=output)
         reason = f"killed by signal {-code}" if code < 0 else f"exit code {code}"
@@ -73,23 +81,26 @@ class CommandSink:
         return Result("retry", code=code, error=reason, output=output)
 
     @staticmethod
-    def _stop(process: subprocess.Popen) -> tuple[bytes, bytes]:
-        """Stop the program and everything that it started."""
+    def _stop(process: subprocess.Popen) -> int | None:
+        """Stop the program and everything in its process group."""
         for sig in (signal.SIGTERM, signal.SIGKILL):
             try:
                 os.killpg(process.pid, sig)
             except ProcessLookupError:
                 pass
             try:
-                return process.communicate(timeout=KILL_GRACE)
+                return process.wait(timeout=KILL_GRACE)
             except subprocess.TimeoutExpired:
                 continue
-        return process.communicate()
+        return None
 
-    def _output(self, stdout: bytes, stderr: bytes) -> str:
+    def _output(self, stdout: IO[bytes], stderr: IO[bytes]) -> str:
         parts = []
-        for name, data in (("stdout", stdout), ("stderr", stderr)):
-            text = (data or b"")[-16384:].decode("utf-8", "replace").strip()
+        for name, handle in (("stdout", stdout), ("stderr", stderr)):
+            size = handle.seek(0, os.SEEK_END)
+            handle.seek(max(0, size - TAIL_BYTES))
+            text = handle.read().decode("utf-8", "replace").strip()
             if text:
                 parts.append(f"[{name}] {text}")
+        # Redact before cutting, so that a cut cannot leave half a secret.
         return redact("\n".join(parts), self.secrets)

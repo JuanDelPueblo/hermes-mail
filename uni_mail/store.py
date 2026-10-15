@@ -159,18 +159,31 @@ class Store:
         rows = self._rows("SELECT uid, id FROM messages WHERE account=? AND folder=?", (account, folder))
         return {row["uid"]: row["id"] for row in rows}
 
-    def add(self, record: dict[str, Any]) -> None:
-        self._write(
-            "INSERT OR REPLACE INTO messages (id, account, folder, uidvalidity, uid, message_id, date, sender, recipients, cc, "
-            "subject, read, flagged, size, parts, preview, indexed) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (
-                record["id"], record["account"], record["folder"], record["uidvalidity"], record["uid"],
-                record.get("message_id", ""), record.get("date", ""), record.get("sender", ""),
-                record.get("recipients", ""), record.get("cc", ""), record.get("subject", ""),
-                int(bool(record.get("read"))), int(bool(record.get("flagged"))), int(record.get("size", 0)),
-                json.dumps(record.get("parts", [])), record.get("preview", ""), time.time(),
-            ),
-        )
+    def add(self, record: dict[str, Any], event: tuple[str, dict[str, Any]] | None = None) -> None:
+        """Index a message. With `event` (kind, data), record that event in the
+        same transaction, so a crash cannot index the mail without its event."""
+        with self.events_changed:
+            self._db.execute("BEGIN IMMEDIATE")
+            try:
+                self._db.execute(
+                    "INSERT OR REPLACE INTO messages (id, account, folder, uidvalidity, uid, message_id, date, sender, recipients, cc, "
+                    "subject, read, flagged, size, parts, preview, indexed) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        record["id"], record["account"], record["folder"], record["uidvalidity"], record["uid"],
+                        record.get("message_id", ""), record.get("date", ""), record.get("sender", ""),
+                        record.get("recipients", ""), record.get("cc", ""), record.get("subject", ""),
+                        int(bool(record.get("read"))), int(bool(record.get("flagged"))), int(record.get("size", 0)),
+                        json.dumps(record.get("parts", [])), record.get("preview", ""), time.time(),
+                    ),
+                )
+                if event is not None:
+                    self._insert_event(event[0], record["account"], record["id"], "", event[1])
+                self._db.execute("COMMIT")
+            except BaseException:
+                self._db.execute("ROLLBACK")
+                raise
+            if event is not None:
+                self.events_changed.notify_all()
 
     def remove(self, ids: Iterable[str]) -> None:
         with self._lock:
@@ -232,15 +245,19 @@ class Store:
     # stored the event (it was "acknowledged" in hermes-mail); the delivery
     # state of each destination lives in the dispatcher's own database.
 
+    def _insert_event(self, kind: str, account: str, mail_id: str, detail: str, data: dict[str, Any] | None) -> int:
+        cursor = self._db.execute(
+            "INSERT INTO events (kind, account, mail_id, detail, created, event_id, data) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (kind, account, mail_id, detail, time.time(), str(uuid.uuid4()), json.dumps(data or {}, ensure_ascii=False)),
+        )
+        return cursor.lastrowid
+
     def add_event(self, kind: str, account: str, mail_id: str = "", detail: str = "",
                   data: dict[str, Any] | None = None) -> dict[str, Any]:
         with self.events_changed:
-            cursor = self._db.execute(
-                "INSERT INTO events (kind, account, mail_id, detail, created, event_id, data) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                (kind, account, mail_id, detail, time.time(), str(uuid.uuid4()), json.dumps(data or {}, ensure_ascii=False)),
-            )
+            seq = self._insert_event(kind, account, mail_id, detail, data)
             self.events_changed.notify_all()
-            return self.event(cursor.lastrowid)
+            return self.event(seq)
 
     @staticmethod
     def _event_row(row: sqlite3.Row) -> dict[str, Any]:

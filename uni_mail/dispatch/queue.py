@@ -98,7 +98,12 @@ class Queue:
         class Transaction:
             def __enter__(self):
                 queue._lock.acquire()
-                queue._db.execute("BEGIN IMMEDIATE")
+                try:
+                    queue._db.execute("BEGIN IMMEDIATE")
+                except BaseException:
+                    # For example a busy timeout: the next call must still get the lock.
+                    queue._lock.release()
+                    raise
                 return queue._db
 
             def __exit__(self, kind, value, traceback):
@@ -144,10 +149,11 @@ class Queue:
 
     # Events in
 
-    def ingest(self, events: list[dict[str, Any]], targets: dict[str, list[str]], cursor: int, body: Any) -> int:
+    def ingest(self, events: list[dict[str, Any]], targets: dict[str, list[str]], cursor: int | None, body: Any) -> int:
         """Store the events with a pending delivery for each of their target
-        destinations, and move the cursor, in one transaction. `body` turns an
-        event into its bytes. Return the number of new deliveries."""
+        destinations, and move the cursor (unless it is None), in one
+        transaction. `body` turns an event into its bytes. Return the number
+        of new deliveries."""
         now = time.time()
         created = 0
         with self._transaction() as db:
@@ -166,8 +172,9 @@ class Queue:
                         "VALUES (?, ?, ?, ?, 'pending', ?, ?, ?)",
                         (delivery_id(event["event_id"], name), event["event_id"], name, event["seq"], now, now, now),
                     ).rowcount
-            db.execute("INSERT INTO meta (key, value) VALUES ('cursor', ?) ON CONFLICT (key) DO UPDATE SET value=excluded.value",
-                       (str(cursor),))
+            if cursor is not None:
+                db.execute("INSERT INTO meta (key, value) VALUES ('cursor', ?) ON CONFLICT (key) DO UPDATE SET value=excluded.value",
+                           (str(cursor),))
         return created
 
     # Work
@@ -260,7 +267,7 @@ class Queue:
 
     def add_deliveries(self, events: list[dict[str, Any]], destination: str, body: Any) -> int:
         """Queue older events for one destination (a replay). An event that it already has is skipped."""
-        return self.ingest(events, {event["event_id"]: [destination] for event in events}, self.cursor() or 0, body)
+        return self.ingest(events, {event["event_id"]: [destination] for event in events}, None, body)
 
     def stats(self) -> dict[str, dict[str, Any]]:
         result: dict[str, dict[str, Any]] = {}

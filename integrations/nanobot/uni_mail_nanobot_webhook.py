@@ -159,9 +159,13 @@ class Handler(BaseHTTPRequestHandler):
     server_version = "uni-mail-nanobot"
     sys_version = ""
     protocol_version = "HTTP/1.1"
+    # A client that stops sending must not hold a thread for ever.
+    timeout = 30
 
     def log_message(self, format: str, *args: Any) -> None:
-        log(f"{self.address_string()} {format % args}")
+        text = format % args
+        # The request line comes from the client: escape control characters.
+        log(f"{self.address_string()} " + "".join(c if c.isprintable() else repr(c)[1:-1] for c in text))
 
     def reply(self, status: int, payload: dict[str, str], close: bool = False) -> None:
         body = json.dumps(payload).encode()
@@ -233,7 +237,11 @@ class Handler(BaseHTTPRequestHandler):
                                      server.workspace, server.config)
         ok, detail = trigger.run_nanobot(command, server.timeout)
         if not ok:
-            server.dedupe.release(event_id)
+            try:
+                server.dedupe.release(event_id)
+            except sqlite3.Error as error:
+                # The row stays "running" until it goes stale; the sender keeps retrying.
+                log(f"event {event_id}: the state could not be written: {error}")
             log(f"event {event_id}: delivery failed: {detail}")
             return self.reply(503, {"status": "failed"})
         try:

@@ -226,9 +226,15 @@ class Migration:
             for name in ("cache", "exports"):
                 folder = self.old_state / name
                 if folder.is_dir():
-                    for item in folder.rglob("*"):
-                        if item.is_file():
-                            self._copy_file(item, self.state_dir / name / item.relative_to(folder), item.stat().st_mode & 0o777, ids)
+                    for item in sorted(folder.rglob("*")):
+                        target_item = self.state_dir / name / item.relative_to(folder)
+                        if item.is_dir():
+                            target_item.mkdir(mode=0o750, parents=True, exist_ok=True)
+                        elif item.is_file():
+                            self._copy_file(item, target_item, item.stat().st_mode & 0o777, ids)
+                    # The daemon must be able to add and trim entries in every directory.
+                    for directory in [self.state_dir / name, *(path for path in (self.state_dir / name).rglob("*") if path.is_dir())]:
+                        self._own(directory, ids)
         for source_path, target_path, mode in self.copies:
             target_path.parent.mkdir(mode=0o750, parents=True, exist_ok=True)
             self._own(target_path.parent, (0, ids[1]) if ids else None)

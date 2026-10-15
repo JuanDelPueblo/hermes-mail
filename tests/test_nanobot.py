@@ -410,6 +410,9 @@ class ReceiverTest(FakeNanobotCase):
         dedupe.finish("e1")
         self.assertEqual(dedupe.claim("e1"), "done")
 
+    def test_a_silent_client_cannot_hold_a_thread(self):
+        self.assertEqual(webhook.Handler.timeout, 30)
+
     def test_oversize_body_is_413(self):
         body = b" " * (webhook.MAX_BODY + 1)
         self.assertEqual(self.post(body=body)[0], 413)

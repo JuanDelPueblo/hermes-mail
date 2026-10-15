@@ -7,6 +7,8 @@ import ipaddress
 import json
 import logging
 import os
+import socket
+import sqlite3
 import sys
 import tempfile
 import threading
@@ -339,6 +341,29 @@ class DispatchTest(unittest.TestCase):
                 dispatcher.run_once()
                 self.assertEqual(self.delivery(dispatcher, "cmd")["status"], expected)
 
+    def test_a_background_child_does_not_hold_up_the_command(self):
+        # The program exits at once; its child keeps stdout open for 30 s.
+        argv = [self.script('sleep 30 & echo started; exit 0\n')]
+        dispatcher = self.dispatcher(self.destinations(hook=None, cmd={"argv": argv, "timeout_seconds": 5}))
+        dispatcher.prepare()
+        self.new_mail()
+        started = time.monotonic()
+        dispatcher.run_once()
+        self.assertLess(time.monotonic() - started, 3)
+        cmd = self.delivery(dispatcher, "cmd")
+        self.assertEqual((cmd["status"], cmd["attempts"]), ("delivered", 1))
+        self.assertIn("started", cmd["last_output"])
+
+    def test_an_escaped_child_does_not_hang_a_timed_out_command(self):
+        argv = [self.script('setsid sleep 30 & sleep 30\n')]
+        dispatcher = self.dispatcher(self.destinations(hook=None, cmd={"argv": argv, "timeout_seconds": 1}))
+        dispatcher.prepare()
+        self.new_mail()
+        started = time.monotonic()
+        dispatcher.run_once()
+        self.assertLess(time.monotonic() - started, 10)
+        self.assertEqual(self.delivery(dispatcher, "cmd")["status"], "pending")
+
     def test_command_timeout_kills_the_process_group(self):
         marker = self.root / "survived"
         argv = [self.script(f'(sleep 3; touch "{marker}") & sleep 30\n')]
@@ -561,6 +586,17 @@ class WebhookRulesTest(unittest.TestCase):
         with self.assertRaisesRegex(config.ConfigError, "allow_private_network"):
             webhook.resolve("localhost", 443, False)
 
+    def test_connection_tries_each_checked_address(self):
+        with socket.socket() as listener:
+            listener.bind(("127.0.0.1", 0))
+            listener.listen()
+            port = listener.getsockname()[1]
+            # The first address refuses, like ::1 for a receiver bound to 127.0.0.1 only.
+            with webhook._connect(["::1" if socket.has_ipv6 else "127.0.0.2", "127.0.0.1"], port, 2):
+                pass
+        with self.assertRaises(OSError):
+            webhook._connect(["127.0.0.1"], port, 2)
+
     def test_signature_and_replay_window(self):
         body = b'{"event_id":"e"}'
         stamp = str(int(time.time()))
@@ -570,6 +606,7 @@ class WebhookRulesTest(unittest.TestCase):
         self.assertFalse(webhook.verify(SECRET, headers, body + b" "))
         self.assertFalse(webhook.verify(SECRET, {**headers, "x-uni-mail-delivery-id": "dlv_2"}, body))
         self.assertFalse(webhook.verify(SECRET, headers, body, now=time.time() + 301))
+        self.assertFalse(webhook.verify(SECRET, {**headers, "x-uni-mail-timestamp": "\u00b2"}, body))
         rotated = {**headers, "x-uni-mail-signature": "v1=00, " + headers["x-uni-mail-signature"]}
         self.assertTrue(webhook.verify(SECRET, rotated, body))
         # The documented format, computed without uni-mail code.
@@ -616,6 +653,21 @@ class DispatchConfigTest(unittest.TestCase):
 
 
 class QueueTest(unittest.TestCase):
+    def test_a_failed_begin_releases_the_lock(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            queue = Queue(Path(tmp))
+            try:
+                queue._db.execute("BEGIN IMMEDIATE")  # a transaction is open: the next BEGIN fails
+                with self.assertRaises(sqlite3.OperationalError):
+                    queue.set_cursor(1)
+                queue._db.execute("ROLLBACK")
+                done = threading.Event()
+                threading.Thread(target=lambda: (queue.set_cursor(2), done.set()), daemon=True).start()
+                self.assertTrue(done.wait(5))
+                self.assertEqual(queue.cursor(), 2)
+            finally:
+                queue.close()
+
     def test_delivery_ids_are_stable_and_queues_are_shared_safely(self):
         with tempfile.TemporaryDirectory() as tmp:
             first, second = Queue(Path(tmp)), Queue(Path(tmp))
