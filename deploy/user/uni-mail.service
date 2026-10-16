@@ -9,8 +9,9 @@ Documentation=https://github.com/JuanDelPueblo/uni-mail
 [Service]
 Environment=UNI_MAIL_LOG_LEVEL=INFO
 ExecStart=%h/.local/share/uni-mail/venv/bin/uni-maild --config %E/uni-mail/config.json
-StateDirectory=uni-mail
-StateDirectoryMode=0700
+# No StateDirectory=: in a user unit, systemd links ~/.local/state/<name> to
+# ~/.config/<name> when that exists, which would put the state next to the
+# config. The program creates its state directory itself (mode 0700).
 RuntimeDirectory=uni-mail
 RuntimeDirectoryMode=0700
 Restart=on-failure

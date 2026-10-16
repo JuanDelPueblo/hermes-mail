@@ -144,6 +144,8 @@ class DeploymentFilesTest(unittest.TestCase):
             self.assertNotIn("User=", unit)
             self.assertIn("WantedBy=default.target", unit)
             self.assertIn("UMask=0077", unit)
+            # systemd would link the state directory to ~/.config/uni-mail.
+            self.assertFalse([line for line in unit.splitlines() if line.startswith("StateDirectory")])
 
     def test_example_config_parses(self):
         raw = json.loads((DEPLOY / "config.example.json").read_text())
