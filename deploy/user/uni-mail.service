@@ -1,0 +1,29 @@
+# The daemon as a user service: install in ~/.config/systemd/user/.
+# It expects the venv in ~/.local/share/uni-mail/venv and the config in
+# ~/.config/uni-mail/config.json, with its state in ~/.local/state/uni-mail
+# and its socket in $XDG_RUNTIME_DIR/uni-mail/mail.sock (docs/INSTALL.md).
+[Unit]
+Description=uni-mail daemon (user service): IMAP index, socket API and event log
+Documentation=https://github.com/JuanDelPueblo/uni-mail
+
+[Service]
+Environment=UNI_MAIL_LOG_LEVEL=INFO
+ExecStart=%h/.local/share/uni-mail/venv/bin/uni-maild --config %E/uni-mail/config.json
+# No StateDirectory=: in a user unit, systemd links ~/.local/state/<name> to
+# ~/.config/<name> when that exists, which would put the state next to the
+# config. The program creates its state directory itself (mode 0700).
+RuntimeDirectory=uni-mail
+RuntimeDirectoryMode=0700
+Restart=on-failure
+RestartSec=10
+UMask=0077
+NoNewPrivileges=true
+LockPersonality=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
+
+[Install]
+WantedBy=default.target

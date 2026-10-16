@@ -1,0 +1,46 @@
+{
+  "state_dir": "/var/lib/uni-mail",
+  "socket": "/run/uni-mail/mail.sock",
+  "web_settings": true,
+  "event_retention_days": 14,
+  "export_dir": "/var/lib/uni-mail/exports",
+  "extract_root": null,
+  "accounts": {
+    "university": {
+      "provider": "microsoft",
+      "address": "student@example.edu",
+      "folders": ["INBOX"],
+      "sync_days": 7
+    },
+    "selfhosted": {
+      "provider": "imap",
+      "address": "user@mail.example.net",
+      "auth": "password",
+      "host": "mail.example.net",
+      "password_file": "/etc/uni-mail/passwords/selfhosted",
+      "archive_folder": "Archive"
+    }
+  },
+  "dispatch": {
+    "state_dir": "/var/lib/uni-mail-dispatch",
+    "retention_days": 30,
+    "retry": {"max_attempts": 8, "initial_seconds": 30, "max_seconds": 3600},
+    "destinations": {
+      "agent": {
+        "type": "webhook",
+        "url": "http://127.0.0.1:8644/webhooks/uni-mail",
+        "secret_file": "/etc/uni-mail/secrets/agent",
+        "allow_private_network": true,
+        "events": ["mail.new"],
+        "accounts": ["university"]
+      },
+      "archive-hook": {
+        "type": "webhook",
+        "url": "https://hooks.example.net/uni-mail",
+        "secret_file": "/etc/uni-mail/secrets/archive-hook",
+        "events": ["mail.*"],
+        "timeout_seconds": 15
+      }
+    }
+  }
+}
