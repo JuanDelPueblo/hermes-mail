@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Phase 0 probe for hermes-mail: can this host read mail over IMAP directly?
+"""Phase 0 probe for uni-mail: can this host read mail over IMAP directly?
 
 The probe signs in to one mail account with the public OAuth client of
 Thunderbird, or with a password. Then it runs the IMAP operations that the
-hermes-mail service needs and prints a GO or NO GO verdict.
+uni-mail service needs and prints a GO or NO GO verdict.
 
 The probe does not download the mailbox. It reads counters, message UIDs,
 message sizes and two header fields of a small sample. It reads all data with
@@ -502,7 +502,7 @@ def run_seen_test(imap: imaplib.IMAP4, args: argparse.Namespace, results: Result
 
 
 def parser() -> argparse.ArgumentParser:
-    result = argparse.ArgumentParser(description="Check direct IMAP access for hermes-mail. Changes nothing except the optional read-state test.")
+    result = argparse.ArgumentParser(description="Check direct IMAP access for uni-mail. Changes nothing except the optional read-state test.")
     result.add_argument("provider", choices=sorted(PROVIDERS))
     result.add_argument("--user", required=True, help="the mail address to sign in with")
     result.add_argument("--auth", choices=["oauth", "password"], default="oauth")

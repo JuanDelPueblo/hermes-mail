@@ -2,13 +2,17 @@
 
 from __future__ import annotations
 
+import json
+import os
 import sys
+import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).parents[1]))
 
-from hermes_mail import config, imapproto, mime  # noqa: E402
+from uni_mail import config, imapproto, mime  # noqa: E402
 
 
 class ParseFetchTest(unittest.TestCase):
@@ -150,13 +154,14 @@ class MimeTest(unittest.TestCase):
 
 class ConfigTest(unittest.TestCase):
     def base(self, **account):
-        return {"state_dir": "/var/lib/hermes-mail", "accounts": {"uni": {"provider": "microsoft", "address": "a@b.edu", **account}}}
+        return {"state_dir": "/var/lib/uni-mail", "accounts": {"uni": {"provider": "microsoft", "address": "a@b.edu", **account}}}
 
     def test_defaults(self):
         cfg = config.parse(self.base())
         account = cfg.accounts["uni"]
-        self.assertEqual((account.auth, account.folders, account.sync_days, account.notify.mode), ("oauth", ("INBOX",), 7, "none"))
-        self.assertEqual(str(cfg.socket), "/run/hermes-mail/mail.sock")
+        self.assertEqual((account.auth, account.folders, account.sync_days), ("oauth", ("INBOX",), 7))
+        self.assertFalse(hasattr(account, "notify"))
+        self.assertEqual(str(cfg.socket), "/run/uni-mail/mail.sock")
 
     def test_archive_folder_defaults_by_provider(self):
         microsoft = config.parse(self.base()).accounts["uni"]
@@ -168,37 +173,28 @@ class ConfigTest(unittest.TestCase):
         overridden = config.parse(self.base(archive_folder="Old Mail")).accounts["uni"]
         self.assertEqual(overridden.archive_folder, "Old Mail")
 
-    def test_notify_modes(self):
-        for mode in ("triage", "agent"):
-            notify = config.parse(self.base(notify={"mode": mode, "target": "discord:1"})).accounts["uni"].notify
-            self.assertEqual(notify.mode, mode)
-            self.assertNotIn("task_command", notify.to_dict())
-        with self.assertRaisesRegex(config.ConfigError, "'all' was removed"):
-            config.parse(self.base(notify={"mode": "all", "target": "discord:1"}))
-        with self.assertRaisesRegex(config.ConfigError, "notify.target"):
-            config.parse(self.base(notify={"mode": "agent"}))
-        with self.assertRaisesRegex(config.ConfigError, "notify.mode must be one of"):
-            config.parse(self.base(notify={"mode": "loud"}))
+    def test_old_notify_settings_are_ignored_with_a_warning(self):
+        for notify in ({"mode": "triage", "target": "discord:1"}, {"mode": "all"}, {"mode": "agent", "task_command": ["/bin/task"]}):
+            with self.subTest(notify=notify), self.assertLogs("uni_mail", "WARNING") as logs:
+                account = config.parse(self.base(notify=notify)).accounts["uni"]
+            self.assertIn("notify was removed", logs.output[0])
+            self.assertEqual(account.address, "a@b.edu")
+        with self.assertLogs("uni_mail", "WARNING") as logs:
+            config.parse({**self.base(), "triage_retention_days": 30})
+        self.assertIn("triage_retention_days was removed", logs.output[0])
 
-    def test_a_task_command_is_ignored_with_a_warning(self):
-        with self.assertLogs("hermes_mail", "WARNING") as logs:
-            notify = config.parse(self.base(notify={"mode": "triage", "target": "d:1", "task_command": ["/bin/task"]})).accounts["uni"].notify
-        self.assertIn("task_command was removed", logs.output[0])
-        self.assertEqual(notify.mode, "triage")
-
-    def test_triage_retention(self):
-        self.assertEqual(config.parse(self.base()).triage_retention_days, 30)
-        self.assertEqual(config.parse({**self.base(), "triage_retention_days": 0}).triage_retention_days, 0)
+    def test_event_retention(self):
+        self.assertEqual(config.parse(self.base()).event_retention_days, 14)
+        self.assertEqual(config.parse({**self.base(), "event_retention_days": 0}).event_retention_days, 0)
         for value in (-1, 4000):
-            with self.assertRaisesRegex(config.ConfigError, "triage_retention_days"):
-                config.parse({**self.base(), "triage_retention_days": value})
+            with self.assertRaisesRegex(config.ConfigError, "event_retention_days"):
+                config.parse({**self.base(), "event_retention_days": value})
 
     def test_errors(self):
         for account, message in [
             ({"provider": "yahoo"}, "provider"),
             ({"provider": "imap"}, "password"),
             ({"auth": "password"}, "password_file"),
-            ({"notify": {"mode": "triage"}}, "notify.target"),
             ({"sync_days": 0}, "sync_days"),
         ]:
             with self.subTest(account=account), self.assertRaisesRegex(config.ConfigError, message):
@@ -209,3 +205,48 @@ class ConfigTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DefaultPathsTest(unittest.TestCase):
+    """Which config and socket a command uses when none is given: a user service, or the system service."""
+
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+        environment = mock.patch.dict(os.environ, {"XDG_CONFIG_HOME": str(self.root)}, clear=False)
+        environment.start()
+        self.addCleanup(environment.stop)
+        for name in ("UNI_MAIL_CONFIG", "UNI_MAIL_SOCKET"):
+            os.environ.pop(name, None)
+        self.user_config = self.root / "uni-mail" / "config.json"
+
+    def write(self, raw: dict) -> None:
+        self.user_config.parent.mkdir(exist_ok=True)
+        self.user_config.write_text(json.dumps(raw))
+
+    def test_config(self):
+        with mock.patch("uni_mail.config.os.geteuid", return_value=1000):
+            self.assertEqual(config.default_config(), config.DEFAULT_CONFIG)
+            self.write({})
+            self.assertEqual(config.default_config(), str(self.user_config))
+            os.environ["UNI_MAIL_CONFIG"] = "/srv/other.json"
+            self.assertEqual(config.default_config(), "/srv/other.json")
+            del os.environ["UNI_MAIL_CONFIG"]
+        # root runs the system service.
+        with mock.patch("uni_mail.config.os.geteuid", return_value=0):
+            self.assertEqual(config.default_config(), config.DEFAULT_CONFIG)
+
+    def test_socket(self):
+        with mock.patch("uni_mail.config.os.geteuid", return_value=1000):
+            self.assertEqual(config.resolve_socket(), config.DEFAULT_SOCKET)
+            self.write({"socket": "/run/user/1000/uni-mail/mail.sock"})
+            self.assertEqual(config.resolve_socket(), "/run/user/1000/uni-mail/mail.sock")
+            os.environ["UNI_MAIL_SOCKET"] = "/tmp/env.sock"
+            self.assertEqual(config.resolve_socket(), "/tmp/env.sock")
+            self.assertEqual(config.resolve_socket("/tmp/option.sock"), "/tmp/option.sock")
+            del os.environ["UNI_MAIL_SOCKET"]
+            # A config that cannot be read, or that names no socket, gives the default.
+            self.assertEqual(config.resolve_socket("", self.root / "missing.json"), config.DEFAULT_SOCKET)
+            self.write({"state_dir": "/x"})
+            self.assertEqual(config.resolve_socket(), config.DEFAULT_SOCKET)

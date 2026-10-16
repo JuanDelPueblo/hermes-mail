@@ -11,7 +11,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v6
-      - run: uvx ruff check --no-cache --select E,F,W,B --ignore E501 --target-version py312 .
+      - run: uvx ruff check --no-cache --select E,F,W,B --ignore E501 --target-version py314 .
 
   tests:
     runs-on: ubuntu-latest
@@ -20,44 +20,29 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.14"
-      - name: Run the test suite
+      - name: Run the test suite without optional packages
         run: python -W error::ResourceWarning -m unittest discover -s tests -v
-      - name: Check the pip package
+      - name: Install the package with the MCP extra
         run: |
-          python -m pip install --quiet .
-          hermes-mail --help > /dev/null
-          hermes-maild --help > /dev/null
+          python -m pip install --quiet ".[mcp]"
+          uni-mail --help > /dev/null
+          uni-maild --help > /dev/null
+          uni-mail-mcp --help > /dev/null
+      - name: Run the MCP tests
+        run: python -W error::ResourceWarning -m unittest tests.test_mcp -v
+      - name: Check that a plain install works without the MCP extra
+        env:
+          UNI_MAIL_TEST_INSTALL: "1"
+        run: |
+          python -m pip install --quiet uv
+          python -m unittest tests.test_packaging -v
 
-  plugin-tests:
+  container:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-      - run: python -m unittest tests.test_plugin -v
+      - name: Build the image
+        run: podman build -t localhost/uni-mail:latest .
+      - name: Run the daemon as the Quadlet units do, and query it from another container
+        run: scripts/container-smoke.sh
 
-  hermes-plugin:
-    runs-on: ubuntu-latest
-    env:
-      # Keep in step with the Hermes release that runs the plugin.
-      HERMES_REF: v2026.9.24
-    steps:
-      - uses: actions/checkout@v4
-      - name: Build the plugin directory
-        run: scripts/build-plugin.sh
-      - uses: actions/checkout@v4
-        with:
-          repository: NousResearch/hermes-agent
-          ref: ${{ env.HERMES_REF }}
-          path: hermes
-      - uses: astral-sh/setup-uv@v6
-      # Hermes does not build wheels, so run it from a synced checkout.
-      - name: Validate the plugin with Hermes
-        working-directory: hermes
-        run: |
-          uv sync --python 3.12
-          export HERMES_HOME="$(mktemp -d)"
-          plugin="$(readlink -f ../dist/hermes-mail-plugin)"
-          uv run --no-sync hermes plugins validate "$plugin"
-          uv run --no-sync hermes plugins doctor "$plugin" --ci

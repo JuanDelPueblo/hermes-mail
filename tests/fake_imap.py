@@ -1,6 +1,6 @@
 """A small in-process IMAP server and OAuth token endpoint for tests.
 
-The IMAP server implements only the commands that hermes-mail uses. It
+The IMAP server implements only the commands that uni-mail uses. It
 records every command, so a test can check what the client asked for. A FETCH
 of BODY[...] without PEEK sets \\Seen, as a real server does.
 """
