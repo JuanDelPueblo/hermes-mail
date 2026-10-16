@@ -36,3 +36,13 @@ jobs:
         run: |
           python -m pip install --quiet uv
           python -m unittest tests.test_packaging -v
+
+  container:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build the image
+        run: podman build -t localhost/uni-mail:latest .
+      - name: Run the daemon as the Quadlet units do, and query it from another container
+        run: scripts/container-smoke.sh
+

@@ -17,7 +17,10 @@ mark mail as read is in the route's prompt, in Hermes.
 The example assumes uni-mail and Hermes run as user services of the same user
 (`deploy/user/`, docs/INSTALL.md), so the socket needs no shared group. With
 the system service, the user of Hermes must be in the `uni-mail` group, and
-`--socket` is `/run/uni-mail/mail.sock`.
+`--socket` is `/run/uni-mail/mail.sock`. With the Podman units
+(docs/CONTAINER.md), the MCP server is `command: podman` with
+`args: ["exec", "-i", "uni-mail", "uni-mail-mcp"]`, and the webhook works as
+below because the dispatcher container uses the host network.
 
 ## 1. The shared secret
 

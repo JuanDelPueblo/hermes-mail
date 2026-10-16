@@ -670,6 +670,19 @@ def dispatch_events_sample() -> dict:
                         mail_id="university.3f2a9c1d0b7e4a55", created=time.time(), data={"subject": "Exam moved"})
 
 
+class QueueOpenTest(unittest.TestCase):
+    @unittest.skipIf(os.geteuid() == 0, "root can write anywhere")
+    def test_a_database_that_cannot_be_opened_is_a_config_error(self):
+        with tempfile.TemporaryDirectory() as directory:
+            locked = Path(directory) / "locked"
+            locked.mkdir(mode=0o500)
+            try:
+                with self.assertRaisesRegex(config.ConfigError, "cannot open the dispatch database"):
+                    Queue(locked)
+            finally:
+                locked.chmod(0o700)
+
+
 class DispatchConfigTest(unittest.TestCase):
     def test_errors(self):
         good_command = {"type": "command", "argv": ["/bin/true"]}

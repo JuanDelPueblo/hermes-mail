@@ -14,13 +14,14 @@ gets an event, reads the mail through MCP, and decides what to do.
 | `uni-mail` | The command line client, the event dispatcher (`uni-mail dispatch`) and the migration from hermes-mail. |
 | `uni-mail-mcp` | An optional MCP server with the mail tools (extra `mcp`). |
 | `deploy/` | systemd units (system services, and user services in `deploy/user/`), sysusers, tmpfiles and a config example. |
+| `Containerfile`, `deploy/podman/` | A container image and rootless Podman Quadlet units. |
 | `integrations/nanobot/` | Optional examples: a command that runs `nanobot trigger`, and a webhook receiver. |
 | `integrations/hermes/` | Optional example: Hermes Agent with the MCP tools and a webhook route. |
 
 The daemon and the dispatcher use only the Python standard library (Python
 3.14 or later). Neither needs Nanobot or any agent framework.
 
-- Install: [docs/INSTALL.md](docs/INSTALL.md)
+- Install: [docs/INSTALL.md](docs/INSTALL.md), or with Podman: [docs/CONTAINER.md](docs/CONTAINER.md)
 - Events, destinations, webhook signatures, delivery guarantees: [docs/EVENTS.md](docs/EVENTS.md)
 - Design and its reasons: [docs/DESIGN.md](docs/DESIGN.md)
 - Coming from hermes-mail: [docs/MIGRATION.md](docs/MIGRATION.md)

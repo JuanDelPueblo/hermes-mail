@@ -1,0 +1,31 @@
+# Optional: the MCP server over Streamable HTTP on 127.0.0.1:8765, with a
+# bearer token from the Podman secret uni-mail-mcp-token. MCP clients on the
+# host can also start it over stdio instead: podman exec -i uni-mail uni-mail-mcp
+[Unit]
+Description=uni-mail MCP server (container, Streamable HTTP on 127.0.0.1:8765)
+Documentation=https://github.com/JuanDelPueblo/uni-mail/blob/main/docs/CONTAINER.md
+Wants=uni-mail.service
+After=uni-mail.service
+
+[Container]
+ContainerName=uni-mail-mcp
+Image=localhost/uni-mail:latest
+Exec=uni-mail-mcp --socket /run/uni-mail/mail.sock --transport streamable-http --host 127.0.0.1 --port 8765 --token-file /run/secrets/uni-mail-mcp-token
+UserNS=keep-id:uid=10001,gid=10001
+Secret=uni-mail-mcp-token,uid=10001,gid=10001,mode=0400
+Volume=uni-mail-run.volume:/run/uni-mail
+# Listen on the host's loopback only.
+Network=host
+ReadOnly=true
+NoNewPrivileges=true
+DropCapability=ALL
+# New files are private to the user, as with UMask=0077 in the native units.
+PodmanArgs=--umask=0077
+
+[Service]
+Restart=on-failure
+RestartSec=10
+TimeoutStartSec=300
+
+[Install]
+WantedBy=default.target

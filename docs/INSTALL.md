@@ -3,7 +3,8 @@
 This guide installs `uni-maild`, the `uni-mail` command, the dispatcher and,
 optionally, `uni-mail-mcp`, on Fedora Server 44 with systemd. It needs no
 LLM, agent framework or desktop mail client. To move an existing hermes-mail
-installation, follow [MIGRATION.md](MIGRATION.md) instead.
+installation, follow [MIGRATION.md](MIGRATION.md) instead. To run uni-mail in
+rootless Podman containers, see [CONTAINER.md](CONTAINER.md).
 
 uni-mail needs Python 3.14 or later (IMAP IDLE). Fedora Server 44 ships it as
 `python3`:

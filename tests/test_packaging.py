@@ -159,6 +159,97 @@ class DeploymentFilesTest(unittest.TestCase):
         self.assertIsInstance(dispatch, dispatch_config.DispatchConfig)
 
 
+def unit_entries(path: Path) -> dict[str, list[tuple[str, str]]]:
+    """The sections of a systemd or Quadlet unit, with every key=value line (keys repeat)."""
+    sections: dict[str, list[tuple[str, str]]] = {}
+    current = ""
+    for line in path.read_text().splitlines():
+        line = line.strip()
+        if not line or line.startswith(("#", ";")):
+            continue
+        if line.startswith("["):
+            current = line.strip("[]")
+            sections.setdefault(current, [])
+            continue
+        key, _, value = line.partition("=")
+        sections[current].append((key, value))
+    return sections
+
+
+class PodmanTest(unittest.TestCase):
+    PODMAN = DEPLOY / "podman"
+    CONTAINERS = ("uni-mail.container", "uni-mail-dispatch.container", "uni-mail-mcp.container")
+
+    def container(self, name: str) -> dict[str, list[str]]:
+        found: dict[str, list[str]] = {}
+        for key, value in unit_entries(self.PODMAN / name)["Container"]:
+            found.setdefault(key, []).append(value)
+        return found
+
+    def test_image_runs_as_the_mapped_user(self):
+        lines = (ROOT / "Containerfile").read_text().splitlines()
+        self.assertIn("USER 10001:10001", lines)
+        self.assertTrue(any(line.startswith("FROM docker.io/library/python:3.14") for line in lines))
+        ignore = (ROOT / ".containerignore").read_text().splitlines()
+        self.assertEqual(ignore[0], "*")
+
+    def test_containers_are_locked_down(self):
+        for name in self.CONTAINERS:
+            container = self.container(name)
+            self.assertEqual(container["Image"], ["localhost/uni-mail:latest"], name)
+            self.assertEqual(container["UserNS"], ["keep-id:uid=10001,gid=10001"], name)
+            for key, value in (("ReadOnly", "true"), ("NoNewPrivileges", "true"), ("DropCapability", "ALL"),
+                               ("PodmanArgs", "--umask=0077")):
+                self.assertEqual(container.get(key), [value], f"{name}: {key}")
+            self.assertNotIn("PublishPort", container, name)
+            # Every container shares the socket volume.
+            self.assertIn("uni-mail-run.volume:/run/uni-mail", container["Volume"], name)
+
+    def test_volumes_exist_and_match_the_config(self):
+        mounts = {}
+        for name in self.CONTAINERS:
+            for value in self.container(name)["Volume"]:
+                source, target = value.split(":")[:2]
+                mounts[target] = source
+                if source.endswith(".volume"):
+                    volume = unit_entries(self.PODMAN / source)["Volume"]
+                    self.assertEqual(volume, [("VolumeName", source.removesuffix(".volume"))])
+        raw = json.loads((self.PODMAN / "config.example.json").read_text())
+        parsed = config.parse(raw)
+        dispatch = dispatch_config.parse(raw["dispatch"])
+        self.assertEqual(mounts[str(parsed.state_dir)], "uni-mail-state.volume")
+        self.assertEqual(mounts[str(parsed.socket.parent)], "uni-mail-run.volume")
+        self.assertEqual(mounts[str(dispatch.state_dir)], "uni-mail-dispatch.volume")
+        self.assertEqual(mounts["/etc/uni-mail"], "%h/.config/uni-mail")
+        # Files named in the config are below the mounted config directory.
+        for destination in dispatch.destinations.values():
+            if destination.secret_file:
+                self.assertTrue(destination.secret_file.startswith("/etc/uni-mail/"), destination.secret_file)
+        for account in parsed.accounts.values():
+            if account.password_file:
+                self.assertTrue(account.password_file.startswith("/etc/uni-mail/"), account.password_file)
+        # A command destination would run inside the dispatcher container.
+        self.assertFalse([d for d in dispatch.destinations.values() if d.kind == "command"])
+
+    def test_commands(self):
+        execs = {name: self.container(name)["Exec"] for name in self.CONTAINERS}
+        self.assertEqual(execs["uni-mail.container"], ["uni-maild --config /etc/uni-mail/config.json"])
+        self.assertEqual(execs["uni-mail-dispatch.container"], ["uni-mail --config /etc/uni-mail/config.json dispatch run"])
+        [mcp] = execs["uni-mail-mcp.container"]
+        self.assertIn("--host 127.0.0.1", mcp)
+        self.assertIn("--token-file /run/secrets/uni-mail-mcp-token", mcp)
+        self.assertNotIn("--allow-remote", mcp)
+
+    @unittest.skipUnless(Path("/usr/libexec/podman/quadlet").exists(), "Quadlet is not installed")
+    def test_quadlet_accepts_the_units(self):
+        result = subprocess.run(["/usr/libexec/podman/quadlet", "-dryrun", "-user"], capture_output=True, text=True,
+                                env={**os.environ, "QUADLET_UNIT_DIRS": str(self.PODMAN)}, timeout=60, check=False)
+        self.assertEqual(result.returncode, 0, result.stderr[-2000:])
+        for unit in ("uni-mail.service", "uni-mail-dispatch.service", "uni-mail-mcp.service", "uni-mail-state-volume.service",
+                     "uni-mail-run-volume.service", "uni-mail-dispatch-volume.service"):
+            self.assertIn(f"---{unit}---", result.stdout, unit)
+
+
 class EntryPointsTest(unittest.TestCase):
     def setUp(self):
         self.project = tomllib.loads((ROOT / "pyproject.toml").read_text())

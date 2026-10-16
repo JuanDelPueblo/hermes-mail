@@ -22,6 +22,8 @@ import time
 from pathlib import Path
 from typing import Any, Iterable
 
+from ..config import ConfigError
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (
     key TEXT PRIMARY KEY,
@@ -78,11 +80,18 @@ class Queue:
         self.path = state_dir / "dispatch.sqlite3"
         self._lock = threading.RLock()
         # Other dispatcher processes may share the file: wait for their writes.
-        self._db = sqlite3.connect(self.path, check_same_thread=False, isolation_level=None, timeout=30)
-        self._db.row_factory = sqlite3.Row
-        self._db.execute("PRAGMA journal_mode=WAL")
-        self._db.execute("PRAGMA busy_timeout=30000")
-        self._db.executescript(SCHEMA)
+        try:
+            self._db = sqlite3.connect(self.path, check_same_thread=False, isolation_level=None, timeout=30)
+        except sqlite3.Error as error:
+            raise ConfigError(f"cannot open the dispatch database {self.path}: {error}") from None
+        try:
+            self._db.row_factory = sqlite3.Row
+            self._db.execute("PRAGMA journal_mode=WAL")
+            self._db.execute("PRAGMA busy_timeout=30000")
+            self._db.executescript(SCHEMA)
+        except sqlite3.Error as error:
+            self._db.close()
+            raise ConfigError(f"cannot open the dispatch database {self.path}: {error}") from None
 
     def close(self) -> None:
         with self._lock:
