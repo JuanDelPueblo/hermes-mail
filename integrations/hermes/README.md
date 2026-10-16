@@ -76,6 +76,28 @@ systemctl --user restart hermes-gateway.service
 - Hermes names MCP tools after the server; instructions or skills that name
   tools of the old hermes-mail plugin need the new names.
 
+## Known issue: `[SILENT]` on stock Hermes
+
+Hermes creates webhook events without `reply_expected=False`, so the gateway
+treats a webhook run as a chat message that needs an answer: it replaces a
+bare `[SILENT]` with "⚠️ The model returned only a silence marker for a
+message that needed a reply" and delivers that. The webhook adapter itself is
+written for silent runs (its `send()` drops silence markers), so the fix is
+one argument where the adapter builds the event, in
+`gateway/platforms/webhook.py` of the Hermes checkout:
+
+```diff
+         event = MessageEvent(text=prompt, message_type=MessageType.TEXT, source=source, raw_message=payload,
+-                             message_id=delivery_id)
++                             message_id=delivery_id, reply_expected=False)
+```
+
+Then `systemctl --user reload hermes-gateway.service`; the log shows
+"Suppressing intentional silence marker" for a silent run. A `hermes update`
+can undo the change; check it after each update. (Firing a cron job from the
+route, `cron_job`, is silent without the patch, but Hermes runs one cron job
+at a time and drops an event that arrives while the job runs.)
+
 ## 4. Check it
 
 ```sh
