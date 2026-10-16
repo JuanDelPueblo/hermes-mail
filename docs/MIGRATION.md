@@ -145,6 +145,40 @@ the history, or drop it.
    `/etc/hermes-mail`, `/var/lib/hermes-mail`, and the `hermes-mail` user and
    group.
 
+## To a user service instead
+
+To run uni-mail as a user service of one user (docs/INSTALL.md, "As a user
+service"), for example the user that runs the agent:
+
+1. As that user, install the venv in `~/.local/share/uni-mail/venv` and the
+   units of `deploy/user/` in `~/.config/systemd/user/`, then
+   `systemctl --user daemon-reload`. No uni-mail system user is needed.
+2. Stop hermes-mail as in step 2 above.
+3. Copy. Reading the hermes-mail tokens needs root, so this runs with sudo;
+   everything it creates belongs to the user:
+
+   ```sh
+   sudo ~/.local/share/uni-mail/venv/bin/uni-mail migrate --user "$USER"           # report only
+   sudo ~/.local/share/uni-mail/venv/bin/uni-mail migrate --user "$USER" --apply
+   ```
+
+   It writes `~/.config/uni-mail/config.json` (mode 0600) with the state in
+   `~/.local/state/uni-mail` (mode 0700), the socket in
+   `/run/user/<uid>/uni-mail/mail.sock` and `dispatch.state_dir` in
+   `~/.local/state/uni-mail-dispatch`. Password files below
+   `/etc/hermes-mail` go to `~/.config/uni-mail/`. The checks are the same as
+   for the system service.
+4. As the user: `systemctl --user enable --now uni-mail.service`,
+   `loginctl enable-linger "$USER"` if it is not on, and `uni-mail status`.
+   The user service cannot conflict with the hermes-mail system units, so
+   keep those disabled: `uni-maild` also refuses to start while a hermes-mail
+   daemon answers on its socket.
+5. Continue with step 6 above with `systemctl --user` and without `sudo -u`.
+
+Rollback is the same as below, with the tokens in
+`~/.local/state/uni-mail/tokens/` and `systemctl --user disable --now
+uni-mail-dispatch.service uni-mail.service`.
+
 ## No duplicate or lost events
 
 - Mail already in the index creates no event: the folder baselines are

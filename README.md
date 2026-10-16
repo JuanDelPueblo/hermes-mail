@@ -13,8 +13,9 @@ gets an event, reads the mail through MCP, and decides what to do.
 | `uni-maild` | The daemon: IMAP and OAuth sign-in, the SQLite index, a Unix socket API and the event log. |
 | `uni-mail` | The command line client, the event dispatcher (`uni-mail dispatch`) and the migration from hermes-mail. |
 | `uni-mail-mcp` | An optional MCP server with the mail tools (extra `mcp`). |
-| `deploy/` | systemd units, sysusers, tmpfiles and a config example. |
+| `deploy/` | systemd units (system services, and user services in `deploy/user/`), sysusers, tmpfiles and a config example. |
 | `integrations/nanobot/` | Optional examples: a command that runs `nanobot trigger`, and a webhook receiver. |
+| `integrations/hermes/` | Optional example: Hermes Agent with the MCP tools and a webhook route. |
 
 The daemon and the dispatcher use only the Python standard library (Python
 3.14 or later). Neither needs Nanobot or any agent framework.
@@ -24,6 +25,7 @@ The daemon and the dispatcher use only the Python standard library (Python
 - Design and its reasons: [docs/DESIGN.md](docs/DESIGN.md)
 - Coming from hermes-mail: [docs/MIGRATION.md](docs/MIGRATION.md)
 - Nanobot end to end: [integrations/nanobot/README.md](integrations/nanobot/README.md)
+- Hermes Agent end to end: [integrations/hermes/README.md](integrations/hermes/README.md)
 
 ## Accounts
 
@@ -90,7 +92,8 @@ with its own queue, retries and acknowledgement:
 
 - **command**: runs a configured program with the event JSON on stdin; exit
   code 0 acknowledges;
-- **webhook**: a signed HTTPS POST (HMAC-SHA256); a 2xx answer acknowledges.
+- **webhook**: a signed HTTPS POST (HMAC-SHA256, also as a Standard Webhooks
+  signature); a 2xx answer acknowledges.
 
 ```json
 "dispatch": {

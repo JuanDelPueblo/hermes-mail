@@ -1,0 +1,26 @@
+# The dispatcher as a user service: install in ~/.config/systemd/user/ next
+# to uni-mail.service. Command destinations run as this user.
+[Unit]
+Description=uni-mail dispatcher (user service): deliver mail events to webhooks and commands
+Documentation=https://github.com/JuanDelPueblo/uni-mail
+Wants=uni-mail.service
+After=uni-mail.service
+
+[Service]
+Environment=UNI_MAIL_LOG_LEVEL=INFO
+ExecStart=%h/.local/share/uni-mail/venv/bin/uni-mail --config %E/uni-mail/config.json dispatch run
+StateDirectory=uni-mail-dispatch
+StateDirectoryMode=0700
+Restart=always
+RestartSec=15
+# A stop waits for a running command or request; the timeout of a destination is at most one hour.
+TimeoutStopSec=90
+UMask=0077
+NoNewPrivileges=true
+LockPersonality=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=default.target

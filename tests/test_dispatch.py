@@ -29,6 +29,18 @@ from uni_mail.dispatch.sinks import redact  # noqa: E402
 from uni_mail.server import Service, SocketServer  # noqa: E402
 
 SECRET = "s3cret-value-for-tests"
+
+
+def standard_valid(secret: str, headers: dict, body: bytes) -> bool:
+    """A Standard Webhooks check written from the specification, without uni-mail code."""
+    import base64
+    import hashlib
+    import hmac
+
+    key = base64.b64decode(secret.removeprefix("whsec_")) if secret.startswith("whsec_") else secret.encode()
+    signed = f"{headers['webhook-id']}.{headers['webhook-timestamp']}.".encode() + body
+    expected = base64.b64encode(hmac.new(key, signed, hashlib.sha256).digest()).decode()
+    return any(part == f"v1,{expected}" for part in headers["webhook-signature"].split())
 logging.getLogger("uni_mail").setLevel(logging.CRITICAL)
 
 
@@ -172,6 +184,11 @@ class DispatchTest(unittest.TestCase):
         self.assertTrue(webhook.verify(SECRET, headers, request["body"]))
         self.assertFalse(webhook.verify("wrong", headers, request["body"]))
         self.assertNotEqual(headers["x-uni-mail-delivery-id"], cmd["delivery_id"])
+        # The Standard Webhooks signature of the same request.
+        self.assertEqual(headers["webhook-id"], headers["x-uni-mail-delivery-id"])
+        self.assertEqual(headers["webhook-timestamp"], headers["x-uni-mail-timestamp"])
+        self.assertTrue(standard_valid(SECRET, headers, request["body"]))
+        self.assertFalse(standard_valid("wrong", headers, request["body"]))
         self.assertEqual({row["status"] for row in dispatcher.queue.list()}, {"delivered"})
         # The daemon knows that the dispatcher stored the event.
         self.assertIsNone(self.client.event_head()["first_pending"])
@@ -194,7 +211,7 @@ class DispatchTest(unittest.TestCase):
         hook = self.delivery(dispatcher, "hook")
         self.assertEqual((hook["status"], hook["attempts"]), ("delivered", 2))
         first, second = self.receiver.requests
-        for key in ("x-uni-mail-event-id", "x-uni-mail-delivery-id"):
+        for key in ("x-uni-mail-event-id", "x-uni-mail-delivery-id", "webhook-id"):
             self.assertEqual(first["headers"][key], second["headers"][key])
         self.assertEqual(first["headers"]["x-uni-mail-event-id"], event["event_id"])
         self.assertEqual((first["headers"]["x-uni-mail-attempt"], second["headers"]["x-uni-mail-attempt"]), ("1", "2"))
@@ -614,6 +631,43 @@ class WebhookRulesTest(unittest.TestCase):
         import hmac
         expected = hmac.new(SECRET.encode(), f"{stamp}.dlv_1.".encode() + body, hashlib.sha256).hexdigest()
         self.assertEqual(headers["x-uni-mail-signature"], f"v1={expected}")
+
+    def test_standard_webhooks_signature(self):
+        # The example of the Standard Webhooks specification.
+        secret = "whsec_MfKQ9r8GKYqrTwjUPD8ILPZIo2LaLaSw"
+        body = b'{"test": 2432232314}'
+        self.assertEqual(webhook.standard_signature(secret, "msg_p5jXN8AQM9LWM0D4loKWxJek", "1614265330", body),
+                         "v1,g0hM9SsE+OTPJTGt/tmIKtSyZlE3uFJELVlNIOLJ1OE=")
+        # A secret without the prefix is the key as text.
+        headers = {"webhook-id": "dlv_1", "webhook-timestamp": "1700000000",
+                   "webhook-signature": webhook.standard_signature(SECRET, "dlv_1", "1700000000", body)}
+        self.assertTrue(standard_valid(SECRET, headers, body))
+        for bad in ("whsec_not base64!", "whsec_"):
+            with self.assertRaises(config.ConfigError):
+                webhook.standard_key(bad)
+
+    @unittest.skipUnless(os.environ.get("UNI_MAIL_TEST_HERMES"), "set UNI_MAIL_TEST_HERMES to a hermes-agent checkout")
+    def test_hermes_accepts_the_signature(self):
+        """The Hermes webhook platform validates the Standard Webhooks headers (opt-in: needs a Hermes install)."""
+        import subprocess
+
+        root = Path(os.environ["UNI_MAIL_TEST_HERMES"])
+        python = next(path for path in (root / "venv/bin/python", root / ".venv/bin/python", Path(sys.executable)) if path.exists())
+        body = events.dumps(dispatch_events_sample())
+        stamp = str(int(time.time()))
+        for secret in (SECRET, "whsec_MfKQ9r8GKYqrTwjUPD8ILPZIo2LaLaSw"):
+            signature = webhook.standard_signature(secret, "dlv_0123", stamp, body)
+            script = ("import sys; from gateway.platforms.webhook import _validate_svix_signature as v; "
+                      "sys.exit(0 if v(sys.stdin.buffer.read(), sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]) else 1)")
+            for sign, expected in ((signature, 0), (signature[:-4] + "AAA=", 1)):
+                result = subprocess.run([str(python), "-c", script, secret, "dlv_0123", stamp, sign], input=body,
+                                        cwd=root, capture_output=True, timeout=120, check=False)
+                self.assertEqual(result.returncode, expected, result.stderr.decode()[-2000:])
+
+
+def dispatch_events_sample() -> dict:
+    return events.build(event_id="6f1c0a4e-3c1d-4f0b-9a57-0f2b8d4f6a11", event_type="mail.new", seq=42, account="university",
+                        mail_id="university.3f2a9c1d0b7e4a55", created=time.time(), data={"subject": "Exam moved"})
 
 
 class DispatchConfigTest(unittest.TestCase):

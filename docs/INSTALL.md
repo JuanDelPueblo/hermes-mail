@@ -162,6 +162,55 @@ uni-mail-mcp --transport streamable-http --host 127.0.0.1 --port 8765 --token-fi
 It refuses to start without a token, or on a non-loopback address without
 `--allow-remote`.
 
+## As a user service
+
+uni-mail can also run as a systemd user service of one user, without sudo
+after the install and with no shared group: the daemon, the dispatcher and
+every client (CLI, MCP, the agent) are that user. This suits a single-user
+machine where the agent runs as the same user, as Hermes or Nanobot user
+services do. Command destinations then run as that user too.
+
+| | System service | User service |
+| --- | --- | --- |
+| Program | `/opt/uni-mail` | `~/.local/share/uni-mail/venv` |
+| Config | `/etc/uni-mail/config.json` | `~/.config/uni-mail/config.json` |
+| State | `/var/lib/uni-mail` | `~/.local/state/uni-mail` |
+| Dispatcher state | `/var/lib/uni-mail-dispatch` | `~/.local/state/uni-mail-dispatch` |
+| Socket | `/run/uni-mail/mail.sock` | `/run/user/<uid>/uni-mail/mail.sock` |
+| Units | `deploy/*.service` | `deploy/user/*.service` |
+
+```sh
+python3 -m venv ~/.local/share/uni-mail/venv
+~/.local/share/uni-mail/venv/bin/pip install '.[mcp]'
+ln -s ~/.local/share/uni-mail/venv/bin/uni-mail ~/.local/bin/uni-mail
+install -d -m 0700 ~/.config/uni-mail ~/.config/systemd/user
+cp deploy/config.example.json ~/.config/uni-mail/config.json
+chmod 0600 ~/.config/uni-mail/config.json
+```
+
+In the config, set `state_dir` to `/home/<user>/.local/state/uni-mail`,
+`socket` to `/run/user/<uid>/uni-mail/mail.sock`, and `dispatch.state_dir` to
+`/home/<user>/.local/state/uni-mail-dispatch` (absolute paths; `~` is not
+expanded). Then:
+
+```sh
+cp deploy/user/uni-mail.service deploy/user/uni-mail-dispatch.service ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now uni-mail.service
+loginctl enable-linger "$USER"    # run without a login session, and start at boot
+uni-mail status
+```
+
+Without `--config`, `uni-mail`, `uni-maild` and `uni-mail-mcp` use
+`$UNI_MAIL_CONFIG`, else `~/.config/uni-mail/config.json` when it exists, else
+`/etc/uni-mail/config.json`; the clients take the socket from that file
+unless `--socket` or `$UNI_MAIL_SOCKET` names one. From hermes-mail, use
+`sudo uni-mail migrate --user <user>` (docs/MIGRATION.md).
+
+The user units sandbox less than the system units: they leave out the
+options that need privileges or user namespaces, and the files are the
+user's own anyway. Logs: `journalctl --user -u uni-mail -u uni-mail-dispatch`.
+
 ## SELinux
 
 Fedora runs SELinux. When a service does not start, read its log:

@@ -625,3 +625,100 @@ class EndToEndTest(MigrationTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class UserServiceTest(MigrationTestCase):
+    """--user: the target is a user service, owned by that user, below the user's home and runtime directory."""
+
+    def setUp(self):
+        super().setUp()
+        import os
+        import pwd
+
+        self.name = pwd.getpwuid(os.getuid()).pw_name
+        self.uid = os.getuid()
+        euid = mock.patch("uni_mail.migrate.os.geteuid", return_value=self.uid)
+        euid.start()
+        self.addCleanup(euid.stop)
+        self.layout_ = self.layout()
+        self.layout_.build()
+        self.home = self.layout_.root / "home"
+        self.home.mkdir()
+        self.paths = {"config": self.home / ".config/uni-mail/config.json", "state_dir": self.home / ".local/state/uni-mail",
+                      "dispatch_state_dir": self.home / ".local/state/uni-mail-dispatch",
+                      "socket": Path("/run/user/4242/uni-mail/mail.sock")}
+        paths = mock.patch("uni_mail.migrate.user_paths", return_value=self.paths)
+        paths.start()
+        self.addCleanup(paths.stop)
+
+    def args(self, **kwargs) -> argparse.Namespace:
+        values = {"from_config": str(self.layout_.from_config), "to_config": None, "state_dir": None, "owner": None,
+                  "user": self.name, "with_cache": False, "apply": True}
+        return argparse.Namespace(**{**values, **kwargs})
+
+    def test_apply_writes_a_private_user_installation(self):
+        before = self.layout_.old_files()
+        result = run(self.args())
+        self.assertTrue(result["applied"], result)
+        self.assertNotIn("ok", result)
+        raw = json.loads(self.paths["config"].read_text())
+        self.assertEqual(raw["state_dir"], str(self.paths["state_dir"]))
+        self.assertEqual(raw["socket"], "/run/user/4242/uni-mail/mail.sock")
+        self.assertEqual(raw["dispatch"], {"state_dir": str(self.paths["dispatch_state_dir"])})
+        self.assertEqual(raw["export_dir"], str(self.paths["state_dir"] / "exports"))
+        password = self.home / ".config/uni-mail/passwords/self"
+        self.assertEqual(raw["accounts"]["self"]["password_file"], str(password))
+        self.assertEqual(password.read_text(), "app-password\n")
+        for path, mode in ((self.paths["config"], 0o600), (password, 0o600), (self.paths["state_dir"], 0o700),
+                           (self.paths["config"].parent, 0o700), (self.home / ".local", 0o700), (self.home / ".local/state", 0o700),
+                           (self.paths["state_dir"] / "tokens/uni.json", 0o600)):
+            self.assertEqual(stat.S_IMODE(path.stat().st_mode), mode, path)
+        parsed = config.load(self.paths["config"])
+        self.assertEqual(parsed.socket, self.paths["socket"])
+        self.assertEqual(dispatch_config.parse(raw["dispatch"]).state_dir, self.paths["dispatch_state_dir"])
+        self.assertTrue(any("systemctl --user enable --now uni-mail.service" in step for step in result["next"]))
+        self.assertEqual(self.layout_.old_files(), before)
+
+    def test_an_existing_dispatch_section_keeps_its_state_dir(self):
+        raw = self.layout_.raw()
+        raw["dispatch"] = {"state_dir": "/srv/dispatch", "destinations": {}}
+        self.layout_.write_config(raw)
+        run(self.args())
+        self.assertEqual(json.loads(self.paths["config"].read_text())["dispatch"]["state_dir"], "/srv/dispatch")
+
+    def test_as_root_everything_created_belongs_to_the_user(self):
+        import os
+        import pwd
+
+        user = pwd.getpwnam(self.name)
+        owners: dict[str, tuple[int, int]] = {}
+        with mock.patch("uni_mail.migrate.os.geteuid", return_value=0), \
+                mock.patch("uni_mail.migrate.os.chown", side_effect=lambda path, uid, gid, **_: owners.__setitem__(str(path), (uid, gid))):
+            result = run(self.args())
+        self.assertTrue(result["applied"], result)
+        expected = (user.pw_uid, user.pw_gid)
+        for path in (self.paths["config"], self.paths["config"].parent, self.home / ".config", self.home / ".local",
+                     self.home / ".local/state", self.paths["state_dir"], self.paths["state_dir"] / "index.sqlite3",
+                     self.paths["state_dir"] / "tokens", self.paths["state_dir"] / "tokens/uni.json",
+                     self.home / ".config/uni-mail/passwords", self.home / ".config/uni-mail/passwords/self"):
+            self.assertEqual(owners.get(str(path)), expected, path)
+        # The home itself existed before and is left alone; nothing goes to root or to another group.
+        self.assertNotIn(str(self.home), owners)
+        self.assertEqual(set(owners.values()), {expected})
+        self.assertTrue(os.path.exists(self.paths["config"]))
+
+    def test_another_user_needs_root(self):
+        result = run(self.args(user="someone-else-" + self.name))
+        self.assertIs(result["ok"], False)
+        self.assertTrue(any("only root or" in problem for problem in result["problems"]), result["problems"])
+        self.assertFalse(self.paths["config"].exists())
+
+    @unittest.skipIf(__import__("os").geteuid() == 0, "root can read everything")
+    def test_unreadable_tokens_ask_for_sudo(self):
+        tokens = self.layout_.old_state / "tokens"
+        tokens.chmod(0o000)
+        self.addCleanup(tokens.chmod, 0o700)
+        result = run(self.args())
+        self.assertIs(result["ok"], False)
+        self.assertTrue(any("run the migration with sudo" in problem for problem in result["problems"]), result["problems"])
+        self.assertFalse(self.paths["state_dir"].exists())

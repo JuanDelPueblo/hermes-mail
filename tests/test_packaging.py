@@ -99,6 +99,8 @@ class DeploymentFilesTest(unittest.TestCase):
     FILES = (
         "uni-mail.service",
         "uni-mail-dispatch.service",
+        "user/uni-mail.service",
+        "user/uni-mail-dispatch.service",
         "sysusers.d/uni-mail.conf",
         "tmpfiles.d/uni-mail.conf",
         "config.example.json",
@@ -131,6 +133,17 @@ class DeploymentFilesTest(unittest.TestCase):
         self.assertIn("uni-mail", starts[0])
         self.assertIn("dispatch", starts[0])
         self.assertIn("/etc/uni-mail/config.json", starts[0])
+
+    def test_user_units(self):
+        for name, program in (("uni-mail.service", "uni-maild"), ("uni-mail-dispatch.service", "uni-mail")):
+            unit = (DEPLOY / "user" / name).read_text()
+            starts = [line for line in unit.splitlines() if line.startswith("ExecStart=")]
+            self.assertEqual(starts, [f"ExecStart=%h/.local/share/uni-mail/venv/bin/{program} --config %E/uni-mail/config.json"
+                                      + (" dispatch run" if program == "uni-mail" else "")])
+            # A user manager cannot switch users, and the default target of a user is default.target.
+            self.assertNotIn("User=", unit)
+            self.assertIn("WantedBy=default.target", unit)
+            self.assertIn("UMask=0077", unit)
 
     def test_example_config_parses(self):
         raw = json.loads((DEPLOY / "config.example.json").read_text())

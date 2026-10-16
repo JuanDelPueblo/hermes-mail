@@ -490,9 +490,11 @@ class SocketServer(socketserver.ThreadingUnixStreamServer):
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="uni-maild", description="uni-mail daemon: IMAP index, socket API and event log")
-    parser.add_argument("--config", default=os.environ.get("UNI_MAIL_CONFIG", config.DEFAULT_CONFIG))
+    parser.add_argument("--config", default=None, help="default: $UNI_MAIL_CONFIG, ~/.config/uni-mail/config.json when it exists, "
+                                                        "or /etc/uni-mail/config.json")
     parser.add_argument("--log-level", default=os.environ.get("UNI_MAIL_LOG_LEVEL", "INFO"))
     args = parser.parse_args(argv)
+    args.config = args.config or config.default_config()
     logging.basicConfig(level=args.log_level.upper(), stream=sys.stderr, format="%(levelname)s %(message)s")
     if sys.version_info < (3, 14):
         log.error("uni-maild needs Python 3.14 or later for IMAP IDLE")

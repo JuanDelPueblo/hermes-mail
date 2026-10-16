@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -117,6 +118,42 @@ def parse(raw: dict[str, Any]) -> Config:
         web_settings=bool(raw.get("web_settings", True)),
         event_retention_days=retention,
     )
+
+
+def user_config() -> Path:
+    """The config file of a user service: $XDG_CONFIG_HOME/uni-mail/config.json."""
+    base = os.environ.get("XDG_CONFIG_HOME") or str(Path.home() / ".config")
+    return Path(base) / "uni-mail" / "config.json"
+
+
+def default_config() -> str:
+    """$UNI_MAIL_CONFIG, else the user's config file when it exists (not for root), else /etc/uni-mail/config.json."""
+    configured = os.environ.get("UNI_MAIL_CONFIG", "")
+    if configured:
+        return configured
+    if os.geteuid() != 0:
+        try:
+            if user_config().is_file():
+                return str(user_config())
+        except (OSError, RuntimeError):
+            pass
+    return DEFAULT_CONFIG
+
+
+def configured_socket(path: str | Path) -> str:
+    """The socket that a config file names, or "" when the file cannot be read."""
+    try:
+        raw = json.loads(Path(path).read_text())
+    except (OSError, ValueError):
+        return ""
+    value = raw.get("socket") if isinstance(raw, dict) else None
+    return value if isinstance(value, str) else ""
+
+
+def resolve_socket(explicit: str = "", config_path: str | Path | None = None) -> str:
+    """The socket of a client: the option, $UNI_MAIL_SOCKET, the config file's socket, /run/uni-mail/mail.sock."""
+    return (explicit or os.environ.get("UNI_MAIL_SOCKET", "")
+            or configured_socket(config_path if config_path is not None else default_config()) or DEFAULT_SOCKET)
 
 
 def load(path: str | Path) -> Config:

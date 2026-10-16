@@ -124,6 +124,9 @@ headers:
 | `X-Uni-Mail-Attempt` | 1, 2, ... |
 | `X-Uni-Mail-Timestamp` | Unix time of this attempt, in seconds |
 | `X-Uni-Mail-Signature` | `v1=<hex>` |
+| `webhook-id` | the delivery ID ([Standard Webhooks](https://www.standardwebhooks.com/)) |
+| `webhook-timestamp` | the same Unix time |
+| `webhook-signature` | `v1,<base64>` |
 
 ### Signature
 
@@ -154,6 +157,22 @@ def verify(secret: str, headers, body: bytes) -> bool:
 
 The timestamp check limits a replay to five minutes; the `event_id` check
 stops it inside that window.
+
+### Standard Webhooks signature
+
+The same request also carries a [Standard Webhooks](https://www.standardwebhooks.com/)
+signature, so a receiver that supports the specification (Svix and Standard
+Webhooks libraries, the Hermes webhook platform) needs no uni-mail code:
+
+```
+webhook-signature = "v1," + base64(HMAC-SHA256(key, webhook-id + "." + webhook-timestamp + "." + body))
+```
+
+`key` is the secret as UTF-8, except for a secret of the form
+`whsec_<base64>`: then it is the decoded bytes, as the specification says.
+`uni-mail dispatch check` refuses a `whsec_` secret that is not base64.
+`webhook-id` is the delivery ID, the same for every attempt, so a receiver
+that drops a `webhook-id` it has seen also drops retries.
 
 ### Answers
 

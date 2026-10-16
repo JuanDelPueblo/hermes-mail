@@ -6,8 +6,18 @@ Signature, version 1 (docs/EVENTS.md):
     X-Uni-Mail-Delivery-Id: <delivery ID, the same for each retry>
     X-Uni-Mail-Signature: v1=<hex HMAC-SHA256(secret, timestamp + "." + delivery_id + "." + body)>
 
+Each request also carries a Standard Webhooks signature
+(https://www.standardwebhooks.com/), which receivers such as Svix
+libraries and the Hermes webhook platform check without uni-mail code:
+
+    webhook-id: <delivery ID>
+    webhook-timestamp: <unix seconds>
+    webhook-signature: v1,<base64 HMAC-SHA256(key, delivery_id + "." + timestamp + "." + body)>
+
 The secret is the text of the secret file or variable without the
-surrounding white space. A receiver checks the signature in constant time,
+surrounding white space. For the Standard Webhooks signature, a secret of
+the form whsec_<base64> gives the decoded bytes as the key, as the
+specification says; any other secret is used as UTF-8 text. A receiver checks the signature in constant time,
 refuses a timestamp more than five minutes away and drops an event ID that
 it has seen.
 
@@ -18,6 +28,8 @@ once, every address must be allowed, and the connection goes to that address
 
 from __future__ import annotations
 
+import base64
+import binascii
 import hashlib
 import hmac
 import http.client
@@ -45,6 +57,24 @@ SHARED = ipaddress.ip_network("100.64.0.0/10")
 def signature(secret: str, timestamp: str, delivery_id: str, body: bytes) -> str:
     message = timestamp.encode() + b"." + delivery_id.encode() + b"." + body
     return "v1=" + hmac.new(secret.encode(), message, hashlib.sha256).hexdigest()
+
+
+def standard_key(secret: str) -> bytes:
+    """The HMAC key of a Standard Webhooks signature: the decoded bytes of a whsec_ secret, else the text."""
+    if secret.startswith("whsec_"):
+        try:
+            key = base64.b64decode(secret.removeprefix("whsec_"), validate=True)
+        except (binascii.Error, ValueError):
+            raise ConfigError("the secret starts with whsec_ but the rest is not base64") from None
+        if not key:
+            raise ConfigError("the whsec_ secret is empty")
+        return key
+    return secret.encode()
+
+
+def standard_signature(secret: str, message_id: str, timestamp: str, body: bytes) -> str:
+    message = message_id.encode() + b"." + timestamp.encode() + b"." + body
+    return "v1," + base64.b64encode(hmac.new(standard_key(secret), message, hashlib.sha256).digest()).decode()
 
 
 def verify(secret: str, headers: dict[str, str], body: bytes, now: float | None = None, tolerance: int = TOLERANCE) -> bool:
@@ -161,6 +191,10 @@ class WebhookSink:
         except OSError as error:
             return Result("retry", error=str(error))
         timestamp = str(int(time.time()))
+        try:
+            standard = standard_signature(secret, delivery_id, timestamp, body)
+        except ConfigError as error:
+            return Result("retry", error=f"destination {destination.name}: {error}")
         headers = {
             "Content-Type": "application/json",
             "User-Agent": f"uni-mail/{__version__}",
@@ -170,6 +204,9 @@ class WebhookSink:
             "X-Uni-Mail-Attempt": str(attempt),
             "X-Uni-Mail-Timestamp": timestamp,
             "X-Uni-Mail-Signature": signature(secret, timestamp, delivery_id, body),
+            "webhook-id": delivery_id,
+            "webhook-timestamp": timestamp,
+            "webhook-signature": standard,
         }
         target = urllib.parse.urlunsplit(("", "", parts.path or "/", parts.query, ""))
         connection = (_PinnedTLS if tls else _Pinned)(parts.hostname or "", port, addresses, destination.timeout_seconds)

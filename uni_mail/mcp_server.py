@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Any
 
 from .client import Client, MailServiceError
+from .config import resolve_socket
 
 MAX_LIMIT = 500
 MAX_IDS = 100
@@ -252,7 +253,10 @@ def serve_http(server: Any, args: argparse.Namespace, token: str) -> None:
 
 def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(prog="uni-mail-mcp", description="MCP server for uni-maild")
-    result.add_argument("--socket", default="", help="the service socket (default: $UNI_MAIL_SOCKET or /run/uni-mail/mail.sock)")
+    result.add_argument("--socket", default="", help="the service socket (default: $UNI_MAIL_SOCKET, the socket of the "
+                                                    "config file, or /run/uni-mail/mail.sock)")
+    result.add_argument("--config", default=None, help="the config file that names the socket (default: $UNI_MAIL_CONFIG, "
+                                                       "~/.config/uni-mail/config.json when it exists, or /etc/uni-mail/config.json)")
     result.add_argument("--transport", choices=("stdio", "streamable-http"), default="stdio")
     result.add_argument("--host", default="127.0.0.1", help="streamable-http: the address to listen on")
     result.add_argument("--port", type=int, default=8765, help="streamable-http: the port")
@@ -289,7 +293,7 @@ def main(argv: list[str] | None = None) -> int:
             print(f"uni-mail-mcp: {args.host} is not a loopback address; use --allow-remote to listen on it", file=sys.stderr)
             return 1
 
-    server = build_server(args.socket, args.log_level)
+    server = build_server(resolve_socket(args.socket, args.config), args.log_level)
     try:
         if args.transport == "stdio":
             server.run("stdio")

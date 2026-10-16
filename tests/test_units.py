@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+import json
+import os
 import sys
+import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).parents[1]))
 
@@ -201,3 +205,48 @@ class ConfigTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DefaultPathsTest(unittest.TestCase):
+    """Which config and socket a command uses when none is given: a user service, or the system service."""
+
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+        environment = mock.patch.dict(os.environ, {"XDG_CONFIG_HOME": str(self.root)}, clear=False)
+        environment.start()
+        self.addCleanup(environment.stop)
+        for name in ("UNI_MAIL_CONFIG", "UNI_MAIL_SOCKET"):
+            os.environ.pop(name, None)
+        self.user_config = self.root / "uni-mail" / "config.json"
+
+    def write(self, raw: dict) -> None:
+        self.user_config.parent.mkdir(exist_ok=True)
+        self.user_config.write_text(json.dumps(raw))
+
+    def test_config(self):
+        with mock.patch("uni_mail.config.os.geteuid", return_value=1000):
+            self.assertEqual(config.default_config(), config.DEFAULT_CONFIG)
+            self.write({})
+            self.assertEqual(config.default_config(), str(self.user_config))
+            os.environ["UNI_MAIL_CONFIG"] = "/srv/other.json"
+            self.assertEqual(config.default_config(), "/srv/other.json")
+            del os.environ["UNI_MAIL_CONFIG"]
+        # root runs the system service.
+        with mock.patch("uni_mail.config.os.geteuid", return_value=0):
+            self.assertEqual(config.default_config(), config.DEFAULT_CONFIG)
+
+    def test_socket(self):
+        with mock.patch("uni_mail.config.os.geteuid", return_value=1000):
+            self.assertEqual(config.resolve_socket(), config.DEFAULT_SOCKET)
+            self.write({"socket": "/run/user/1000/uni-mail/mail.sock"})
+            self.assertEqual(config.resolve_socket(), "/run/user/1000/uni-mail/mail.sock")
+            os.environ["UNI_MAIL_SOCKET"] = "/tmp/env.sock"
+            self.assertEqual(config.resolve_socket(), "/tmp/env.sock")
+            self.assertEqual(config.resolve_socket("/tmp/option.sock"), "/tmp/option.sock")
+            del os.environ["UNI_MAIL_SOCKET"]
+            # A config that cannot be read, or that names no socket, gives the default.
+            self.assertEqual(config.resolve_socket("", self.root / "missing.json"), config.DEFAULT_SOCKET)
+            self.write({"state_dir": "/x"})
+            self.assertEqual(config.resolve_socket(), config.DEFAULT_SOCKET)

@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Any
 
 from .client import Client, MailServiceError
-from .config import DEFAULT_CONFIG, ConfigError
+from .config import ConfigError, default_config, resolve_socket
 
 
 def _print(value: Any) -> None:
@@ -28,9 +28,10 @@ def _print(value: Any) -> None:
 
 def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(prog="uni-mail", description="Read and manage recent mail through uni-maild, and dispatch its events")
-    result.add_argument("--socket", default="", help="the daemon socket (default: the config file's socket, $UNI_MAIL_SOCKET or /run/uni-mail/mail.sock)")
-    result.add_argument("--config", default=os.environ.get("UNI_MAIL_CONFIG", DEFAULT_CONFIG),
-                        help=f"the config file, for dispatch and migrate (default: $UNI_MAIL_CONFIG or {DEFAULT_CONFIG})")
+    result.add_argument("--socket", default="", help="the daemon socket (default: $UNI_MAIL_SOCKET, the config file's socket or /run/uni-mail/mail.sock)")
+    result.add_argument("--config", default=None,
+                        help="the config file (default: $UNI_MAIL_CONFIG, ~/.config/uni-mail/config.json when it exists, "
+                             "or /etc/uni-mail/config.json)")
     sub = result.add_subparsers(dest="command", required=True)
 
     sub.add_parser("status", help="show the accounts, their sign-in state and the last sync")
@@ -117,9 +118,15 @@ def parser() -> argparse.ArgumentParser:
 
     migrate = sub.add_parser("migrate", help="copy a hermes-mail installation to uni-mail (see docs/MIGRATION.md)")
     migrate.add_argument("--from-config", default="/etc/hermes-mail/config.json")
-    migrate.add_argument("--to-config", default=DEFAULT_CONFIG)
-    migrate.add_argument("--state-dir", default="/var/lib/uni-mail", help="the new state directory")
-    migrate.add_argument("--owner", default="uni-mail", help="the user and group of the new state (when run as root)")
+    migrate.add_argument("--user", default="", metavar="NAME",
+                         help="migrate to a user service of this user: the config, state and socket go below the "
+                              "user's home and runtime directory, owned by the user (see docs/MIGRATION.md)")
+    migrate.add_argument("--to-config", default=None, help="the new config (default: /etc/uni-mail/config.json, "
+                                                            "or ~NAME/.config/uni-mail/config.json with --user)")
+    migrate.add_argument("--state-dir", default=None, help="the new state directory (default: /var/lib/uni-mail, "
+                                                            "or ~NAME/.local/state/uni-mail with --user)")
+    migrate.add_argument("--owner", default=None, help="the user and group of the new state when run as root "
+                                                        "(default: uni-mail, or NAME with --user)")
     migrate.add_argument("--with-cache", action="store_true", help="also copy the part cache and the exports")
     migrate.add_argument("--apply", action="store_true", help="make the copy; without it, only report the plan")
     return result
@@ -167,9 +174,14 @@ def run_dispatch(args: argparse.Namespace) -> Any:
         problems = {}
         for name, destination in dispatch_cfg.destinations.items():
             if destination.kind == "webhook":
+                from .dispatch.webhook import standard_key
+
                 try:
-                    if not destination.secret():
+                    secret = destination.secret()
+                    if not secret:
                         problems[name] = f"the secret variable {destination.secret_env} is empty"
+                    else:
+                        standard_key(secret)
                 except ConfigError as error:
                     problems[name] = str(error)
             elif not os.access(destination.argv[0], os.X_OK):
@@ -231,13 +243,15 @@ def run_dispatch(args: argparse.Namespace) -> Any:
 
 def run(args: argparse.Namespace) -> Any:
     command = args.command
+    if args.config is None:
+        args.config = default_config()
     if command == "dispatch":
         return run_dispatch(args)
     if command == "migrate":
         from . import migrate
 
         return migrate.run(args)
-    client = Client(args.socket)
+    client = Client(resolve_socket(args.socket, args.config))
     if command == "status":
         return client.status()
     if command == "folders":
