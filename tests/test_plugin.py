@@ -68,7 +68,7 @@ class RegistrationTest(unittest.TestCase):
         self.assertEqual(sorted(ctx.tools), sorted(provided))
         for name, entry in ctx.tools.items():
             self.assertEqual(entry["schema"]["name"], name)
-            self.assertEqual(entry["toolset"], "mail")
+            self.assertEqual(entry["toolset"], "mail_triage" if name == "mail_triage_report" else "mail")
             self.assertFalse(entry["check_fn"]())
         self.assertTrue(ctx.skills["mail"].is_file())
         self.assertIn("hermes_mail_triage", ctx.tasks)
@@ -159,23 +159,30 @@ class FakeClient:
         self.queue: list[list[dict[str, Any]]] = []
         self.log: dict[int, dict[str, Any]] = {}
         self.log_updates: list[tuple[int, dict[str, Any]]] = []
+        self.dispatched: list[dict[str, Any]] = []
+        self.closed: set[int] = set()
 
     def triage_record(self, entry: dict[str, Any], event_seq: int | None = None) -> int:
         self._check("log")
         self.log[event_seq] = entry
         return event_seq
 
-    def triage_update(self, entry_id: int, fields: dict[str, Any]) -> None:
+    def triage_update(self, entry_id: int, fields: dict[str, Any], expect_status: str = "") -> None:
+        if entry_id in self.closed:
+            raise MailServiceError("the status changed")
         self.log_updates.append((entry_id, fields))
-        self.log[entry_id] = {**self.log[entry_id], **fields}
+        self.log[entry_id] = {**self.log.get(entry_id, {}), **fields}
 
     def _check(self, name: str) -> None:
         if name in self.fail:
             raise MailServiceError(f"{name} is broken")
 
-    def show(self, mail_id: str) -> dict[str, Any]:
+    def show(self, mail_id: str, full: bool = True) -> dict[str, Any]:
         self._check("show")
         return self.mail
+
+    def triage_list(self, **filters: Any) -> dict[str, Any]:
+        return {"entries": [entry for entry in self.dispatched if entry["status"] == "dispatched"]}
 
     def mark(self, ids: list[str], read: bool) -> dict[str, Any]:
         self._check("mark")
@@ -203,13 +210,13 @@ MAIL = {
     "read": False, "message_id": "<m@x>", "body": "Submit homework 4 by 2026-10-02.",
     "attachments": [{"index": 0, "name": "hw4.pdf"}, {"index": 1, "name": "logo.png"}],
 }
-NOTIFY = {"mode": "triage", "target": "discord:123", "policy_file": "", "mark_read_silent": True, "task_command": []}
+NOTIFY = {"mode": "triage", "target": "discord:123", "policy_file": "", "mark_read_silent": True}
 ACCOUNTS = {"uni": {"notify": NOTIFY}}
 EVENT = {"seq": 1, "kind": "mail.new", "account": "uni", "mail_id": "uni.abc", "detail": ""}
 
 
 def decision(**overrides):
-    value = {"decision": "notify", "reason": "SECRET-REASONING", "summary": "Homework 4 is due on 2026-10-02.", "attachments": [0], "task": None}
+    value = {"decision": "notify", "reason": "SECRET-REASONING", "summary": "Homework 4 is due on 2026-10-02.", "attachments": [0]}
     value.update(overrides)
     return value
 
@@ -275,24 +282,6 @@ class NotifierTest(unittest.TestCase):
         notifier.handle(EVENT, accounts)
         self.assertIn("Notify for exams only.", self.prompts[0][0])
 
-    def test_task_command(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            script = Path(tmp) / "task"
-            script.write_text("#!/bin/sh\ncat > \"$0.json\"\necho 'Created: Homework 4'\n")
-            script.chmod(0o755)
-            task = {"title": "Submit homework 4", "due": "2026-10-02", "list": None}
-            notifier, accounts = self.make(decision(task=task), notify={"task_command": [str(script)]})
-            notifier.handle(EVENT, accounts)
-            payload = json.loads(Path(f"{script}.json").read_text())
-        self.assertEqual((payload["title"], payload["due"], payload["message_id"]), ("Submit homework 4", "2026-10-02", "<m@x>"))
-        self.assertIn("Task: Created: Homework 4", self.sent[0][1])
-
-    def test_task_command_failure(self):
-        task = {"title": "Do it", "due": None}
-        notifier, accounts = self.make(decision(task=task), notify={"task_command": ["false"]})
-        notifier.handle(EVENT, accounts)
-        self.assertIn('Mail problem: task creation failed for "Homework 4"', self.sent[0][1])
-
     def test_the_triage_log_has_the_decision_and_the_actions(self):
         notifier, accounts = self.make(decision(attachments=[0, 7]))
         notifier.handle(EVENT, accounts)
@@ -331,12 +320,6 @@ class NotifierTest(unittest.TestCase):
         self.assertEqual((entry["status"], entry["mail_id"], entry["account"]), ("error", "uni.abc", "uni"))
         self.assertIn("show is broken", entry["error"])
 
-    def test_the_log_has_the_all_mode(self):
-        notifier, accounts = self.make(notify={"mode": "all"})
-        notifier.handle(EVENT, accounts)
-        self.assertEqual((self.client.log[1]["mode"], self.client.log[1]["status"]), ("all", "notified"))
-        self.assertIn("Submit homework 4", self.client.log[1]["summary"])
-
     def test_nothing_is_logged_for_mode_none_or_for_account_events(self):
         notifier, accounts = self.make(notify={"mode": "none"})
         notifier.handle(EVENT, accounts)
@@ -362,6 +345,119 @@ class NotifierTest(unittest.TestCase):
         self.assertTrue(notifier.handle(EVENT, accounts))
         self.assertEqual(len(self.sent), 1)
 
+    def agent(self, notify=None, dispatch=None, **kwargs):
+        self.client = FakeClient(dict(MAIL))
+        self.sent = []
+        self.dispatched: list[tuple[dict[str, Any], str]] = []
+        notifier = triage.Notifier(
+            self.client, None, lambda target, message: self.sent.append((target, message)),
+            dispatch=dispatch or (lambda payload, delivery_id: self.dispatched.append((payload, delivery_id))), **kwargs)
+        accounts = {"uni": {"notify": {**NOTIFY, "mode": "agent", "policy": "Only exams.", **(notify or {})}}}
+        return notifier, accounts
+
+    def test_agent_mode_opens_a_log_entry_and_sends_the_mail_to_the_route(self):
+        notifier, accounts = self.agent()
+        self.assertTrue(notifier.handle(EVENT, accounts))
+        [(payload, delivery_id)] = self.dispatched
+        self.assertEqual(delivery_id, "hermes-mail-1")
+        self.assertEqual({key: payload[key] for key in ("event", "account", "mail_id", "policy")},
+                         {"event": "mail.new", "account": "uni", "mail_id": "uni.abc", "policy": "Only exams."})
+        entry = self.client.log[1]
+        self.assertEqual((entry["status"], entry["mode"], entry["run_id"], entry["subject"]), ("dispatched", "agent", payload["run_id"], "Homework 4"))
+        self.assertEqual(self.sent, [])
+        # The prompt gets no mail text: the agent reads the mail with its own tools.
+        self.assertNotIn("Submit homework 4", json.dumps(payload))
+        self.assertEqual((notifier.runs, notifier.log_ids, notifier.attempts), ({}, {}, {}))
+
+    def test_agent_mode_reads_the_policy_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "policy.md"
+            path.write_text("Notify for exams.")
+            notifier, accounts = self.agent({"policy": "", "policy_file": str(path)})
+            notifier.handle(EVENT, accounts)
+        self.assertEqual(self.dispatched[0][0]["policy"], "Notify for exams.")
+
+    def test_agent_route_failures_retry_with_the_same_run_id_then_report(self):
+        calls: list[str] = []
+
+        def down(payload, delivery_id):
+            calls.append(payload["run_id"])
+            raise triage.DispatchError("the gateway webhook is not reachable")
+
+        notifier, accounts = self.agent(dispatch=down)
+        results = [notifier.handle(EVENT, accounts) for _ in range(triage.MAX_SEND_ATTEMPTS)]
+        self.assertEqual(results, [False] * (triage.MAX_SEND_ATTEMPTS - 1) + [True])
+        self.assertEqual(len(set(calls)), 1)
+        [(target, message)] = self.sent
+        self.assertEqual(target, "discord:123")
+        self.assertIn('Mail problem: agent triage failed for "Homework 4": the gateway webhook is not reachable', message)
+        self.assertEqual(self.client.log[1]["status"], "error")
+        self.assertIn("could not start", self.client.log[1]["error"])
+        self.assertEqual((notifier.runs, notifier.attempts, notifier.unsent), ({}, {}, {}))
+
+    def test_a_fatal_route_failure_is_reported_at_once(self):
+        def refused(payload, delivery_id):
+            raise triage.DispatchError("the webhook answered 401: the secret does not match the route", fatal=True)
+
+        notifier, accounts = self.agent(dispatch=refused)
+        self.assertTrue(notifier.handle(EVENT, accounts))
+        self.assertIn("the webhook answered 401", self.sent[0][1])
+        self.assertEqual(self.client.log[1]["status"], "error")
+
+    def test_agent_mode_without_a_dispatcher_is_reported(self):
+        notifier, accounts = self.agent()
+        notifier.dispatch = None
+        self.assertTrue(notifier.handle(EVENT, accounts))
+        self.assertIn("the agent triage is not set up", self.sent[0][1])
+
+    def test_an_unreadable_policy_file_is_reported(self):
+        notifier, accounts = self.agent({"policy": "", "policy_file": "/nonexistent/policy.md"})
+        self.assertTrue(notifier.handle(EVENT, accounts))
+        self.assertIn("cannot read the policy file", self.sent[0][1])
+        self.assertEqual(self.dispatched, [])
+
+    def stale(self, notifier, age_seconds, **entry):
+        import datetime
+        created = datetime.datetime.fromtimestamp(__import__("time").time() - age_seconds, datetime.timezone.utc).isoformat()
+        self.client.dispatched = [{"id": 5, "account": "uni", "mail_id": "uni.abc", "subject": "Homework 4", "sender": "Prof",
+                                  "status": "dispatched", "created": created, **entry}]
+        self.client.log[5] = dict(self.client.dispatched[0])
+
+    def test_sweep_ends_a_run_that_did_not_report_and_tells_the_owner(self):
+        notifier, accounts = self.agent(agent_timeout=900)
+        self.client.accounts = lambda: accounts
+        self.stale(notifier, 1000)
+        notifier.sweep()
+        self.assertEqual(self.client.log_updates[0][0], 5)
+        self.assertEqual(self.client.log[5]["status"], "no_report")
+        self.assertIn("did not report within 15 minutes", self.client.log[5]["error"])
+        [(target, message)] = self.sent
+        self.assertEqual(target, "discord:123")
+        self.assertIn('Mail problem: agent triage failed for "Homework 4": the agent did not report within 15 minutes', message)
+
+    def test_sweep_leaves_a_fresh_run_and_a_run_that_just_reported(self):
+        notifier, accounts = self.agent(agent_timeout=900)
+        self.client.accounts = lambda: accounts
+        self.stale(notifier, 60)
+        notifier.sweep()
+        self.assertEqual((self.client.log_updates, self.sent), ([], []))
+        self.stale(notifier, 1000)
+        self.client.closed.add(5)
+        notifier._last_sweep = 0.0
+        notifier.sweep()
+        self.assertEqual(self.sent, [])
+
+    def test_sweep_runs_at_most_once_a_minute(self):
+        notifier, accounts = self.agent(agent_timeout=900)
+        self.client.accounts = lambda: accounts
+        self.stale(notifier, 1000)
+        notifier.sweep()
+        self.sent.clear()
+        self.client.dispatched[0]["status"] = "dispatched"
+        self.client.closed.clear()
+        notifier.sweep()
+        self.assertEqual(self.sent, [])
+
     def test_auth_event(self):
         notifier, accounts = self.make()
         notifier.handle({**EVENT, "kind": "mail.auth", "detail": "invalid_grant: expired"}, accounts)
@@ -371,9 +467,8 @@ class NotifierTest(unittest.TestCase):
         notifier, accounts = self.make(notify={"mode": "none"})
         self.assertTrue(notifier.handle(EVENT, accounts))
         self.assertEqual(self.sent, [])
-        notifier, accounts = self.make(notify={"mode": "all"})
+        notifier, accounts = self.make(notify={"mode": "agent"})
         notifier.handle(EVENT, accounts)
-        self.assertIn("Submit homework 4", self.sent[0][1])
         self.assertEqual(self.prompts, [])
 
     def test_send_failures_retry_then_give_up(self):
@@ -388,10 +483,7 @@ class NotifierTest(unittest.TestCase):
         self.assertEqual(notifier.unsent, {})
 
     def test_retry_sends_the_same_message_without_a_new_triage(self):
-        task = {"title": "Submit homework 4", "due": None}
-        runs = []
-        notifier, accounts = self.make(decision(task=task), notify={"task_command": ["unused"]})
-        notifier.run_task = lambda argv, payload: runs.append(payload) or "Created"
+        notifier, accounts = self.make(decision())
         failures = [triage.NotifyError("discord is down")]
 
         def flaky(target, message):
@@ -402,7 +494,7 @@ class NotifierTest(unittest.TestCase):
         notifier.send = flaky
         self.assertFalse(notifier.handle(EVENT, accounts))
         self.assertTrue(notifier.handle(EVENT, accounts))
-        self.assertEqual((len(self.prompts), len(runs), self.client.exported), (1, 1, [0]))
+        self.assertEqual((len(self.prompts), self.client.exported), (1, [0]))
         self.assertIn("Homework 4 is due", self.sent[0][1])
         self.assertEqual(notifier.unsent, {})
 
@@ -437,6 +529,228 @@ class NotifierTest(unittest.TestCase):
         self.assertEqual(len(self.sent), 1)
 
 
+class WebhookTest(unittest.TestCase):
+    def setUp(self):
+        import http.server
+        test = self
+        self.requests: list[dict[str, Any]] = []
+        self.status = 202
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def do_POST(self):
+                body = self.rfile.read(int(self.headers["Content-Length"]))
+                test.requests.append({"headers": dict(self.headers), "body": body, "path": self.path})
+                self.send_response(test.status)
+                self.end_headers()
+
+            def log_message(self, *_):
+                pass
+
+        self.server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+        self.url = f"http://127.0.0.1:{self.server.server_port}/webhooks/hermes-mail"
+
+    def tearDown(self):
+        self.server.shutdown()
+        self.server.server_close()
+
+    def test_the_event_is_signed_like_the_generic_v2_webhook(self):
+        import hashlib
+        import hmac
+        triage.post_webhook(self.url, "s3cret", {"run_id": "1-a", "policy": "Only exams. é"}, "hermes-mail-1")
+        [request] = self.requests
+        headers = {key.lower(): value for key, value in request["headers"].items()}
+        expected = hmac.new(b"s3cret", headers["x-webhook-timestamp"].encode() + b"." + request["body"], hashlib.sha256).hexdigest()
+        self.assertEqual(headers["x-webhook-signature-v2"], expected)
+        self.assertEqual(headers["x-request-id"], "hermes-mail-1")
+        self.assertEqual(json.loads(request["body"])["policy"], "Only exams. é")
+        self.assertEqual(request["path"], "/webhooks/hermes-mail")
+
+    def test_failures_say_what_to_do_and_if_a_retry_can_help(self):
+        for status, fatal, text in ((401, True, "secret does not match"), (404, True, "hermes mail agent-route"),
+                                    (400, True, "answered 400"), (503, False, "answered 503"), (429, False, "answered 429")):
+            self.status = status
+            with self.subTest(status=status), self.assertRaises(triage.DispatchError) as caught:
+                triage.post_webhook(self.url, "s3cret", {}, "id")
+            self.assertEqual(caught.exception.fatal, fatal)
+            self.assertIn(text, str(caught.exception))
+        self.status = 200
+        triage.post_webhook(self.url, "s3cret", {}, "id")  # a duplicate delivery answers 200
+
+    def test_a_gateway_that_is_down_can_be_retried(self):
+        import socket
+        with socket.socket() as probe:
+            probe.bind(("127.0.0.1", 0))
+            closed = probe.getsockname()[1]
+        with self.assertRaises(triage.DispatchError) as caught:
+            triage.post_webhook(f"http://127.0.0.1:{closed}/webhooks/hermes-mail", "s3cret", {}, "id", timeout=2)
+        self.assertFalse(caught.exception.fatal)
+        self.assertIn("not reachable", str(caught.exception))
+
+    def test_no_secret_is_fatal(self):
+        with self.assertRaises(triage.DispatchError) as caught:
+            triage.post_webhook(self.url, "", {}, "id")
+        self.assertTrue(caught.exception.fatal)
+        self.assertIn("WEBHOOK_SECRET", str(caught.exception))
+
+    def test_the_secret_comes_from_the_setting_then_the_environment(self):
+        with unittest.mock.patch.dict(os.environ, {"WEBHOOK_SECRET": "global", "HERMES_MAIL_WEBHOOK_SECRET": ""}):
+            self.assertEqual(triage.webhook_secret(FakeContext()), "global")
+            self.assertEqual(triage.webhook_secret(FakeContext({"agent_webhook_secret": " own "})), "own")
+            os.environ["HERMES_MAIL_WEBHOOK_SECRET"] = "mine"
+            self.assertEqual(triage.webhook_secret(FakeContext()), "mine")
+        with unittest.mock.patch.dict(os.environ, {"WEBHOOK_SECRET": "", "HERMES_MAIL_WEBHOOK_SECRET": ""}):
+            self.assertEqual(triage.webhook_secret(FakeContext()), "")
+
+
+class RouteTest(unittest.TestCase):
+    def test_route_text_is_for_the_hermes_config(self):
+        text = triage.route_yaml("http://127.0.0.1:9000/webhooks/hermes-mail")
+        for needle in ("port: 9000", "        hermes-mail:", "deliver: log", 'toolsets: ["mail", "mail_triage", "skills"]',
+                       "{run_id}", "{policy}", "{mail_id}", "mail_triage_report", "[SILENT]"):
+            self.assertIn(needle, text)
+        self.assertNotIn('"terminal"', text.split("prompt:")[0].split("toolsets:")[1].split("\n")[0])
+
+    def test_the_route_prompt_has_no_untrusted_mail_field(self):
+        for field in ("{subject}", "{sender}", "{body}"):
+            self.assertNotIn(field, triage.AGENT_PROMPT)
+
+    def test_the_cli_prints_the_route(self):
+        import argparse
+        import contextlib
+        import io
+        ctx = FakeContext({"agent_webhook_url": "http://127.0.0.1:9100/webhooks/hermes-mail"})
+        triage.add_cli(ctx, lambda: "")
+        setup, handler = ctx.cli["mail"]
+        parser = argparse.ArgumentParser()
+        setup(parser)
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            self.assertEqual(handler(parser.parse_args(["agent-route"])), 0)
+        self.assertIn("port: 9100", output.getvalue())
+
+
+class ReportToolTest(unittest.TestCase):
+    NOTIFY = {"mode": "agent", "target": "discord:123", "policy_file": "", "mark_read_silent": True}
+    ENTRY = {"ok": True, "id": 4, "account": "uni", "mail_id": "uni.1", "subject": "Homework 4", "sender": "Prof <p@x.edu>",
+             "status": "notified", "run_id": "1-abc"}
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.path = os.path.join(self.tmp.name, "mail.sock")
+        self.responses = {
+            "triage_report": dict(self.ENTRY),
+            "accounts": {"ok": True, "accounts": {"uni": {"address": "s@x.edu", "notify": self.NOTIFY}}},
+            "show": {"ok": True, "id": "uni.1", "attachments": [{"index": 0, "name": "hw4.pdf"}, {"index": 1, "name": "logo.png"}]},
+            "export_attachment": {"ok": True, "path": "/exports/uni.1/0.pdf"},
+            "mark": {"ok": True, "results": {}},
+            "triage_update": {"ok": True, "id": 4},
+        }
+        self.service = FakeService(self.path, self.responses)
+        tools.configure(self.path, lambda: {})
+        patcher = unittest.mock.patch.object(triage, "hermes_send")
+        self.send = patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def tearDown(self):
+        self.service.shutdown()
+        self.service.server_close()
+        tools.configure("")
+        self.tmp.cleanup()
+
+    def report(self, **args):
+        values = {"run_id": "1-abc", "decision": "notify", "summary": "Homework 4 is due on 2026-10-02.", "reason": "assigned work",
+                  "attachments": [0, 1, 9], **args}
+        return json.loads(tools.mail_triage_report(values))
+
+    def ops(self):
+        return [request["op"] for request in self.service.requests]
+
+    def test_notify_sends_to_the_target_of_the_account_and_closes_the_entry(self):
+        result = self.report(actions=[{"step": "create task", "ok": True, "detail": "Created: HW4"}])
+        self.assertEqual(result, {"ok": True, "status": "notified"})
+        self.assertEqual(self.service.requests[0]["op"], "triage_report")
+        self.assertEqual(self.service.requests[0]["fields"]["status"], "notified")
+        self.send.assert_called_once()
+        target, message = self.send.call_args.args
+        self.assertEqual(target, "discord:123")
+        self.assertIn("**Homework 4**", message)
+        self.assertIn("Homework 4 is due on 2026-10-02.", message)
+        self.assertIn("MEDIA:/exports/uni.1/0.pdf", message)
+        self.assertNotIn("assigned work", message)
+        exports = [request for request in self.service.requests if request["op"] == "export_attachment"]
+        self.assertEqual([request["index"] for request in exports], [0, 1])
+        update = self.service.requests[-1]
+        self.assertEqual(update["op"], "triage_update")
+        self.assertEqual(update["fields"]["attachments"], [0, 1])
+        self.assertEqual(update["fields"]["actions"][0], {"step": "create task", "ok": True, "detail": "Created: HW4"})
+        self.assertEqual(update["fields"]["error"], "")
+
+    def test_the_model_cannot_pick_the_target(self):
+        self.report(target="discord:999", channel="evil")
+        self.assertEqual(self.send.call_args.args[0], "discord:123")
+        self.assertNotIn("target", json.dumps(self.service.requests[0]))
+
+    def test_the_target_follows_the_notify_plugin_setting(self):
+        tools.configure(self.path, lambda: {"uni": {"mode": "agent", "target": "telegram:7", "policy": "x"}})
+        self.report()
+        self.assertEqual(self.send.call_args.args[0], "telegram:7")
+
+    def test_silent_marks_read_and_sends_nothing(self):
+        self.responses["triage_report"] = {**self.ENTRY, "status": "silent"}
+        result = self.report(decision="silent", summary="Newsletter.", attachments=[])
+        self.assertEqual(result, {"ok": True, "status": "silent"})
+        self.send.assert_not_called()
+        self.assertIn("mark", self.ops())
+        self.assertEqual(self.service.requests[-1]["fields"]["actions"], [{"step": "mark read", "ok": True}])
+
+    def test_a_failed_action_of_the_agent_reaches_the_owner(self):
+        self.report(actions=[{"step": "create task", "ok": False, "detail": "no list for COMP 101"}])
+        message = self.send.call_args.args[1]
+        self.assertIn('Mail problem: create task failed for "Homework 4": no list for COMP 101', message)
+        self.assertIn("create task: no list for COMP 101", self.service.requests[-1]["fields"]["error"])
+        self.assertEqual(self.service.requests[-1]["fields"].get("status"), None)
+
+    def test_a_silent_decision_with_a_failed_action_still_tells_the_owner(self):
+        self.report(decision="silent", summary="x", attachments=[], actions=[{"step": "create task", "ok": False}])
+        self.assertIn("Mail problem: create task failed", self.send.call_args.args[1])
+
+    def test_a_send_failure_closes_the_entry_as_an_error_and_tells_the_agent(self):
+        self.send.side_effect = triage.NotifyError("discord is down")
+        result = self.report()
+        self.assertFalse(result["ok"])
+        self.assertIn("discord is down", result["error"])
+        self.assertIn("do not report again", result["error"])
+        update = self.service.requests[-1]["fields"]
+        self.assertEqual(update["status"], "error")
+        self.assertIn("notification: discord is down", update["error"])
+
+    def test_an_account_without_a_target_is_an_error(self):
+        self.responses["accounts"] = {"ok": True, "accounts": {"uni": {"notify": {**self.NOTIFY, "target": ""}}}}
+        result = self.report()
+        self.assertFalse(result["ok"])
+        self.assertIn("no notify target", result["error"])
+
+    def test_bad_reports_never_reach_the_service(self):
+        for args in ({"decision": "maybe"}, {"summary": "  "}):
+            with self.subTest(args=args):
+                self.assertFalse(self.report(**args)["ok"])
+        self.assertEqual(self.service.requests, [])
+
+    def test_an_unknown_or_finished_run_is_refused_without_a_message(self):
+        self.responses["triage_report"] = {"ok": False, "error": "this run already reported or timed out"}
+        result = self.report()
+        self.assertEqual(result, {"ok": False, "error": "this run already reported or timed out"})
+        self.send.assert_not_called()
+        self.assertEqual(self.ops(), ["triage_report"])
+
+    def test_garbage_in_attachments_and_actions_is_dropped(self):
+        self.report(attachments=["0", True, 0, None], actions=["x", {"step": ""}, {"step": "ok step"}, {"ok": True}])
+        update = self.service.requests[-1]["fields"]
+        self.assertEqual(update["attachments"], [0])
+        self.assertEqual(update["actions"][0], {"step": "ok step", "ok": True})
+
+
 class FakeRouter:
     """Records the routes, as far as the dashboard API uses FastAPI."""
 
@@ -461,11 +775,12 @@ class FakeHermesConfig:
 
     def __init__(self):
         self.settings: dict[str, Any] = {}
+        self.platforms: dict[str, Any] = {}
         manifest = (ROOT / "plugin.yaml").read_text().split("config_schema:")[1]
         self.schema = re.findall(r"^  (\w+):$", manifest, re.MULTILINE)
 
     def load_config(self):
-        return {"plugins": {"entries": {"hermes-mail": {"settings": json.loads(json.dumps(self.settings))}}}}
+        return {"plugins": {"entries": {"hermes-mail": {"settings": json.loads(json.dumps(self.settings))}}}, "platforms": self.platforms}
 
     def save_plugin_settings(self, plugin_id, plugin_dir, values):
         assert plugin_id == "hermes-mail" and Path(plugin_dir) == ROOT
@@ -541,15 +856,14 @@ class DashboardTest(unittest.TestCase):
         self.assertEqual(uni["notify"]["current"]["mode"], "triage")
 
     def test_notifications_are_a_plugin_setting_that_replaces_the_base_ones(self):
-        values = {"mode": "all", "target": "telegram:9", "policy": "Only exams.", "mark_read_silent": False,
-                  "task_command": "/bin/task --list 'School work'"}
+        values = {"mode": "agent", "target": "telegram:9", "policy": "Only exams.", "mark_read_silent": False}
         self.assertTrue(self.route("POST", "/accounts/{name}/notify")("uni", values)["ok"])
         stored = self.hermes.settings["notify"]["uni"]
-        self.assertEqual(stored["task_command"], ["/bin/task", "--list", "School work"])
+        self.assertEqual(stored, {"mode": "agent", "target": "telegram:9", "policy": "Only exams.", "mark_read_silent": False})
         self.assertEqual(self.route("GET", "/settings")()["accounts"][0]["notify"]["dashboard"], stored)
         notify = self.notifier().accounts()["uni"]["notify"]
         self.assertEqual((notify["mode"], notify["target"], notify["policy"], notify["policy_file"]),
-                         ("all", "telegram:9", "Only exams.", ""))
+                         ("agent", "telegram:9", "Only exams.", ""))
         self.route("POST", "/accounts/{name}/notify/reset")("uni")
         self.assertEqual(self.hermes.settings["notify"], {})
         self.assertEqual(self.notifier().accounts()["uni"]["notify"]["target"], "discord:123")
@@ -560,7 +874,7 @@ class DashboardTest(unittest.TestCase):
 
     def test_bad_values_are_refused(self):
         for name, values in [("uni", {"mode": "triage", "target": ""}), ("../x", {"mode": "none"}),
-                             ("uni", {"mode": "none", "task_command": "'open"})]:
+                             ("uni", {"mode": "all", "target": "discord:1"})]:
             with self.subTest(values=values):
                 result = self.route("POST", "/accounts/{name}/notify")(name, values)
                 self.assertFalse(result["ok"])
@@ -588,6 +902,30 @@ class DashboardTest(unittest.TestCase):
         self.assertFalse(self.route("GET", "/activity")(account="../x", status="", query="", since="", limit=50, offset=0)["ok"])
         self.assertFalse(self.route("GET", "/activity")(account="", status="great", query="", since="", limit=50, offset=0)["ok"])
 
+    def test_agent_status_checks_the_gateway_and_the_route(self):
+        import http.server
+
+        class Health(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                self.send_response(200 if self.path == "/health" else 404)
+                self.end_headers()
+                self.wfile.write(b'{"status": "ok"}')
+
+            def log_message(self, *_):
+                pass
+
+        server = http.server.HTTPServer(("127.0.0.1", 0), Health)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        self.hermes.settings["agent_webhook_url"] = f"http://127.0.0.1:{server.server_port}/webhooks/hermes-mail"
+        result = self.route("GET", "/agent/status")()
+        self.assertEqual((result["ok"], result["gateway"], result["route"], result["timeout_minutes"]), (True, True, False, 15))
+        self.hermes.platforms = {"webhook": {"enabled": True, "extra": {"routes": {"hermes-mail": {"deliver": "log"}}}}}
+        self.assertTrue(self.route("GET", "/agent/status")()["route"])
+        server.shutdown()
+        self.assertFalse(self.route("GET", "/agent/status")()["gateway"])
+
     def test_folders_come_from_the_service(self):
         result = self.route("GET", "/accounts/{name}/folders")("uni")
         self.assertEqual(result["folders"][1], {"name": "Archive", "special": "archive"})
@@ -604,13 +942,12 @@ class DashboardTest(unittest.TestCase):
 
 class ValidateTest(unittest.TestCase):
     def test_parse_result(self):
-        text = '```json\n{"decision": "silent", "reason": "r", "summary": "s", "attachments": [], "task": null}\n```'
+        text = '```json\n{"decision": "silent", "reason": "r", "summary": "s", "attachments": []}\n```'
         self.assertEqual(triage.parse_result(None, text)["decision"], "silent")
         for bad, message in [
             ({**decision(), "decision": "maybe"}, "not notify or silent"),
             ({**decision(), "summary": ""}, "no summary"),
             ({**decision(), "attachments": ["0"]}, "list of indexes"),
-            ({**decision(), "task": {"title": "x", "due": "Friday"}}, "YYYY-MM-DD"),
         ]:
             with self.subTest(bad=bad), self.assertRaisesRegex(triage.TriageError, message):
                 triage.validate(bad)

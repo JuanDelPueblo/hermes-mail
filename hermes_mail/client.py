@@ -111,8 +111,14 @@ class Client:
             payload["event_seq"] = int(event_seq)
         return self.request(payload)["id"]
 
-    def triage_update(self, entry_id: int, fields: Dict[str, Any]) -> None:
-        self.request({"op": "triage_update", "id": entry_id, "fields": fields})
+    def triage_update(self, entry_id: int, fields: Dict[str, Any], expect_status: str = "") -> None:
+        payload: Dict[str, Any] = {"op": "triage_update", "id": entry_id, "fields": fields}
+        if expect_status:
+            payload["expect_status"] = expect_status
+        self.request(payload)
+
+    def triage_report(self, run_id: str, fields: Dict[str, Any]) -> Dict[str, Any]:
+        return self.request({"op": "triage_report", "run_id": run_id, "fields": fields})
 
     def triage_list(self, **filters: Any) -> Dict[str, Any]:
         return self.request({"op": "triage_list", **{key: value for key, value in filters.items() if value not in (None, "")}})

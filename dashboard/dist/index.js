@@ -269,13 +269,48 @@
         h(Button, { size: "sm", outlined: true, onClick: props.onCancel, disabled: form.busy }, "Cancel")));
   }
 
+  // Is the agent route of the gateway webhook ready? Only for an account in mode agent.
+  function AgentStatus() {
+    const [status, setStatus] = useState(null);
+    const [error, setError] = useState(null);
+
+    const check = useCallback(function () {
+      setStatus(null);
+      SDK.fetchJSON(API + "/agent/status").then(function (data) {
+        if (!data.ok) throw new Error(data.error);
+        setStatus(data);
+        setError(null);
+      }).catch(function (err) { setError(err.message || String(err)); });
+    }, []);
+    useEffect(function () { check(); }, [check]);
+
+    const items = status ? [
+      [status.gateway, "Gateway webhook is reachable at " + status.url, "The gateway webhook is not reachable at " + status.url +
+        (status.gateway_error ? " (" + status.gateway_error + "). " : ". ") + "Enable platforms.webhook in the Hermes config and restart the gateway."],
+      [status.route === null ? null : status.route, "The hermes-mail route is in the Hermes config",
+        "No hermes-mail route in the Hermes config. Run `hermes mail agent-route` and add its output to config.yaml, then restart the gateway."],
+    ] : [];
+    return h("div", { className: "flex flex-col gap-2 border border-midground/15 p-3 text-sm" },
+      h("p", { className: "text-xs text-muted-foreground" },
+        "In agent mode, a Hermes agent run triages each new mail with its own tools. The run gets only the toolsets of the hermes-mail route in the Hermes config. " +
+        "It must end with a mail_triage_report call; a run that does not report within " + (status ? status.timeout_minutes : 15) + " minutes is reported as a problem."),
+      error ? h(ErrorText, { text: error }) : null,
+      !status && !error ? h("p", { className: "text-xs text-muted-foreground" }, "Checking the agent route…") : null,
+      items.map(function (item, index) {
+        return h("p", { key: index, className: item[0] === false ? "text-xs text-destructive" : "text-xs" },
+          item[0] === null ? "Cannot read the Hermes config to check the route." : item[0] ? "OK: " + item[1] : item[2]);
+      }),
+      h("p", { className: "text-xs text-muted-foreground" }, "The secret is $WEBHOOK_SECRET in the Hermes environment, the same for the gateway and the notifier."),
+      h("div", null, h(Button, { size: "sm", outlined: true, onClick: check }, "Check again")));
+  }
+
   function NotifyForm(props) {
     const account = props.account;
     const notify = account.notify;
     const start = notify.current;
     const form = useForm({
       mode: start.mode, target: start.target, policy: start.policy,
-      mark_read_silent: !!start.mark_read_silent, task_command: (start.task_command || []).join(" "),
+      mark_read_silent: !!start.mark_read_silent,
     });
     const v = form.values;
     const checkboxId = React.useId();
@@ -298,18 +333,15 @@
       h("div", { className: "grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3" },
         h(ChoiceField, {
           label: "Mode", value: v.mode, onChange: form.set("mode"),
-          options: [["triage", "Triage"], ["all", "All new mail"], ["none", "None"]],
-          hint: "Triage lets the model select the mail to notify.",
+          options: [["triage", "Triage"], ["agent", "Agent triage"], ["none", "None"]],
+          hint: v.mode === "agent" ? "An agent run reads the mail and can use its own tools."
+            : "Triage lets the model select the mail to notify.",
         }),
         h(TextField, {
           label: "Target", value: v.target, onChange: form.set("target"), placeholder: "discord:1234567890",
           hint: "The Hermes send target.",
-        }),
-        h(TextField, {
-          label: "Task command", value: v.task_command, onChange: form.set("task_command"),
-          placeholder: "/usr/local/bin/my-task-helper",
-          hint: "Gets the task as JSON on stdin. Empty means no tasks.",
         })),
+      v.mode === "agent" ? h(AgentStatus) : null,
       h("div", { className: "flex items-center gap-2" },
         h(Checkbox, {
           id: checkboxId, checked: v.mark_read_silent,
@@ -318,7 +350,9 @@
         h(Label, { htmlFor: checkboxId }, "Mark mail as read when the triage does not notify")),
       h(TextAreaField, {
         label: "Triage policy", rows: 10, value: v.policy, onChange: form.set("policy"),
-        hint: "The triage rules of this account. Empty means the default rule.",
+        hint: v.mode === "agent"
+          ? "The rules of this account. The agent follows them, also for the actions it takes, for example creating a task. Empty means the default rule."
+          : "The triage rules of this account. Empty means the default rule.",
       }),
       h(ErrorText, { text: form.error }),
       h("div", { className: "flex flex-wrap gap-2" },

@@ -17,14 +17,17 @@ let
       mode = mkOption {
         type = types.enum [
           "triage"
-          "all"
+          "agent"
           "none"
         ];
         default = "none";
         description = ''
           What the notifier does with new mail of this account. `triage`
-          classifies each message with the LLM and notifies only for the
-          messages that the policy selects. `all` notifies for every message.
+          classifies each message with one LLM call and notifies only for the
+          messages that the policy selects. `agent` hands each message to a
+          Hermes agent run that follows the policy with its own tools, for
+          example to create tasks; it needs the `hermes-mail` route in the
+          webhook config of Hermes (`hermes mail agent-route` prints it).
           `none` sends nothing, but the tools can still read the account.
         '';
       };
@@ -43,18 +46,6 @@ let
         type = types.bool;
         default = false;
         description = "Mark mail as read on the server when the triage decides not to notify.";
-      };
-      taskCommand = mkOption {
-        type = types.listOf types.str;
-        default = [ ];
-        example = [ "/run/current-system/sw/bin/my-task-helper" ];
-        description = ''
-          A command that creates a task when the triage finds assigned work.
-          The notifier runs it as the Hermes user with the task as JSON on
-          stdin: title, due, list, notes, mail_id, message_id, subject,
-          sender and account. The first line of its output goes into the
-          notification.
-        '';
       };
     };
   };
@@ -179,7 +170,6 @@ let
         inherit (account.notify) mode target;
         policy_file = if account.notify.policyFile == null then null else "${account.notify.policyFile}";
         mark_read_silent = account.notify.markReadSilent;
-        task_command = account.notify.taskCommand;
       };
     }) cfg.accounts;
   };

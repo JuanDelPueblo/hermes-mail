@@ -17,8 +17,10 @@ from __future__ import annotations
 import json
 import os
 import re
-import shlex
 import socket
+import urllib.error
+import urllib.parse
+import urllib.request
 from pathlib import Path
 from typing import Any, Dict
 
@@ -30,7 +32,9 @@ PLUGIN_ID = "hermes-mail"
 PLUGIN_DIR = Path(__file__).resolve().parent.parent
 DEFAULT_SOCKET = "/run/hermes-mail/mail.sock"
 ACCOUNT_NAME = re.compile(r"[a-z][a-z0-9_-]{0,31}")
-MODES = ("triage", "all", "none")
+MODES = ("triage", "agent", "none")
+WEBHOOK_URL = "http://127.0.0.1:8644/webhooks/hermes-mail"
+ROUTE = "hermes-mail"
 POLICY_LIMIT = 64 * 1024
 TIMEOUT = 60
 
@@ -115,16 +119,11 @@ def _notify(values: Any) -> Dict[str, Any]:
     policy = str(values.get("policy") or "")
     if len(policy.encode()) > POLICY_LIMIT:
         raise MailError("the policy is too long")
-    try:
-        command = shlex.split(str(values.get("task_command") or ""))
-    except ValueError as error:
-        raise MailError(f"cannot read the task command: {error}") from None
     return {
         "mode": mode,
         "target": target,
         "policy": policy,
         "mark_read_silent": bool(values.get("mark_read_silent")),
-        "task_command": command,
     }
 
 
@@ -142,7 +141,6 @@ def _base_notify(notify: Dict[str, Any]) -> Dict[str, Any]:
         "policy": notify.get("policy") or policy,
         "policy_error": policy_error,
         "mark_read_silent": bool(notify.get("mark_read_silent")),
-        "task_command": list(notify.get("task_command") or []),
     }
 
 
@@ -277,6 +275,35 @@ def retry_activity(entry_id: int) -> Dict[str, Any]:
         return {"mail_id": response["mail_id"]}
 
     return _answer(retry)
+
+
+@router.get("/agent/status")
+def agent_status() -> Dict[str, Any]:
+    """Is the agent route of the gateway webhook ready? The page shows it for an account in mode agent."""
+    def read() -> Dict[str, Any]:
+        configured = _settings().get("agent_webhook_url")
+        url = configured.strip() if isinstance(configured, str) and configured.strip() else WEBHOOK_URL
+        parts = urllib.parse.urlparse(url)
+        health = f"{parts.scheme}://{parts.netloc}/health"
+        reachable, error = False, ""
+        try:
+            with urllib.request.urlopen(health, timeout=3) as response:
+                reachable = response.status == 200
+        except (urllib.error.URLError, OSError) as failure:
+            error = str(getattr(failure, "reason", failure))
+        route = None
+        try:
+            from hermes_cli.config import load_config
+
+            webhook = (((load_config() or {}).get("platforms") or {}).get("webhook") or {})
+            routes = {**(webhook.get("routes") or {}), **((webhook.get("extra") or {}).get("routes") or {})}
+            route = ROUTE in routes
+        except Exception:
+            route = None
+        return {"url": url, "gateway": reachable, "gateway_error": error, "route": route,
+                "timeout_minutes": _settings().get("agent_timeout_minutes") or 15}
+
+    return _answer(read)
 
 
 @router.post("/triage")

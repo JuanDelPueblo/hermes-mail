@@ -72,6 +72,7 @@ CREATE TABLE IF NOT EXISTS triage (
     finished REAL NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS triage_created ON triage (created);
+CREATE INDEX IF NOT EXISTS triage_run ON triage (run_id);
 """
 
 # Index columns that list and search return. The parts and the preview stay
@@ -299,16 +300,31 @@ class Store:
             )
             return self._rows("SELECT last_insert_rowid() AS id")[0]["id"]
 
-    def triage_update(self, identifier: int, fields: dict[str, Any]) -> bool:
+    def triage_update(self, identifier: int, fields: dict[str, Any], expect_status: str = "") -> bool:
+        """Update a log row. With `expect_status`, only a row that still has this status changes. Return
+        whether a row changed."""
         values = self._triage_values({key: value for key, value in fields.items() if key in TRIAGE_UPDATABLE})
+        condition, extra = ("AND status=?", (expect_status,)) if expect_status else ("", ())
         if not values:
-            return bool(self._rows("SELECT 1 FROM triage WHERE id=?", (identifier,)))
+            return bool(self._rows(f"SELECT 1 FROM triage WHERE id=? {condition}", (identifier, *extra)))
         assignments = [f"{key}=?" for key in values]
         args: list[Any] = list(values.values())
         if values.get("status") not in (None, "dispatched"):
             assignments.append("finished=?")
             args.append(time.time())
-        return self._write(f"UPDATE triage SET {', '.join(assignments)} WHERE id=?", (*args, identifier)) > 0
+        return self._write(f"UPDATE triage SET {', '.join(assignments)} WHERE id=? {condition}", (*args, identifier, *extra)) > 0
+
+    def triage_claim(self, run_id: str, fields: dict[str, Any]) -> dict[str, Any] | str:
+        """Complete the row of an agent run that is still open, once. Return the row, or "unknown" or
+        "closed" when there is no open row for the run ID."""
+        with self._lock:
+            rows = self._rows("SELECT * FROM triage WHERE run_id=? AND run_id<>'' ORDER BY id DESC LIMIT 1", (run_id,))
+            if not rows:
+                return "unknown"
+            if rows[0]["status"] != "dispatched":
+                return "closed"
+            self.triage_update(rows[0]["id"], fields, expect_status="dispatched")
+            return self._triage_row(self._rows("SELECT * FROM triage WHERE id=?", (rows[0]["id"],))[0])
 
     def triage_get(self, identifier: int) -> dict[str, Any] | None:
         rows = self._rows("SELECT * FROM triage WHERE id=?", (identifier,))

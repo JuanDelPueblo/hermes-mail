@@ -81,7 +81,7 @@ shows every key:
 - `accounts.<name>`: `provider`, `address`, `auth`, `host`, `port`,
   `password_file`, `folders`, `archive_folder`, `sync_days`, `poll_seconds`,
   `cache_limit_mb`, `max_part_mb` and `notify` with `mode`, `target`,
-  `policy_file`, `policy`, `mark_read_silent` and `task_command`.
+  `policy_file`, `policy` and `mark_read_silent`.
 
 `archive_folder` defaults to `Archive` for `microsoft` and
 `[Gmail]/All Mail` for `google`. The `imap` provider has no default; set it
@@ -118,7 +118,7 @@ The plugin adds a Mail tab to the Hermes dashboard. On this tab you can:
   the server cannot be reached.
 - Sign in to an OAuth account.
 - Change the notifications of each account: the mode, the target, the triage
-  policy, `markReadSilent` and the task command.
+  policy and `markReadSilent`.
 - Set the provider and the model of the triage call.
 
 The tab keeps each setting with its owner:
@@ -179,12 +179,20 @@ hermes-mail events
 ## Notifications
 
 The `hermes-mail-notify` unit runs `hermes mail notify` as the Hermes user.
+Each account has a `notify.mode`:
+
+- `none`: send nothing. The tools still read the account.
+- `triage`: one LLM call classifies each new message. Code does the rest.
+- `agent`: a Hermes agent run handles each new message with its own tools.
+
+### Triage mode
+
 For each new message of an account with `notify.mode = "triage"`:
 
 1. One structured LLM call classifies the message as `notify` or `silent` and
    writes a short English summary. The call uses no tools.
-2. Code does the actions: mark read (for `silent`, with `markReadSilent`),
-   export the useful attachments and run the task command.
+2. Code does the actions: mark read (for `silent`, with `markReadSilent`) and
+   export the useful attachments.
 3. Code sends one message to `notify.target`: the subject, the sender, the
    summary and the attachments. The model's reasoning never reaches the chat.
 4. Code reports each failed step with a `Mail problem:` line.
@@ -201,22 +209,65 @@ auxiliary:
 
 With no setting, it uses the main model.
 
-`notify.mode = "all"` sends every message with a short preview, with no LLM.
-`notify.mode = "none"` sends nothing.
-
-To test the triage of one message without any change:
+To test the classifier on one message without any change:
 
 ```sh
 hermes mail triage <mail-id>
 ```
 
+### Agent mode
+
+Use `notify.mode = "agent"` when the policy must do more than notify, for
+example create a to-do task or a calendar entry for assigned work. The
+notifier sends each new message to the Hermes gateway, and a normal agent run
+follows the policy with the tools you give it.
+
+1. The notifier writes a `dispatched` entry in the [activity log](#activity-log)
+   and sends a signed event to the `hermes-mail` route of the Hermes webhook
+   platform. The event has the account, the mail ID, a run ID and the policy
+   text, but no mail text; the agent reads the mail with `mail_show`.
+2. The agent follows the policy, uses its tools, and ends with one
+   `mail_triage_report` call: the decision (`notify` or `silent`), a summary,
+   the attachments to send and one entry for each action it took.
+3. The report is the only way out. The route delivers to `log`, so the
+   interim messages and the reasoning of the run never reach a chat. Code
+   handles the report: it marks read, exports the attachments and sends one
+   message to `notify.target`. The model never picks the target. A failed
+   action of the agent goes into the message as a `Mail problem:` line.
+4. A run that does not report within `agent_timeout_minutes` (15 by default)
+   gets a `Mail problem:` message and the status `no_report`.
+
+Set it up once:
+
+1. Put a secret in the Hermes environment, for both the gateway and the
+   notifier: `WEBHOOK_SECRET=<long random text>` in `~/.hermes/.env`. The
+   notifier also reads `HERMES_MAIL_WEBHOOK_SECRET` or the plugin setting
+   `agent_webhook_secret`.
+2. Run `hermes mail agent-route`, and add its output to the `config.yaml` of
+   Hermes under `platforms.webhook`. Then restart the gateway.
+3. Set `notify.mode` to `agent` for the account, on the Mail tab or in the
+   config. The tab checks if the gateway and the route are ready.
+
+The route, and so its tools, belong to the Hermes config on purpose. Hermes
+does not let a plugin or the dashboard grant tools to a webhook route. The
+route from `hermes mail agent-route` has the toolsets `mail`, `mail_triage`
+and `skills`. Add what your policy needs, for example `terminal` for a task
+helper such as `hermes-todo`. Mind that the text of an email can steer the
+tools of the run: give it only what it needs, and describe the allowed
+actions in the policy.
+
+The plugin settings `agent_webhook_url` (the default is
+`http://127.0.0.1:8644/webhooks/hermes-mail`) and `agent_timeout_minutes`
+change the address and the time limit.
+
 ### Activity log
 
 The notifier writes one entry in the triage log for each new message it
-handles in `triage` or `all` mode: the account, the subject and the sender,
-the decision (`notified`, `silent` or `error`), the reason, the summary, each
-action with its result (mark read, attachment exports, the task command) and
-any error. The log is in the service, so you can read it without a chat:
+handles in `triage` or `agent` mode: the account, the subject and the sender,
+the decision (`notified`, `silent`, `error`, `dispatched` or `no_report`), the
+reason, the summary, each action with its result (mark read, attachment
+exports, and in agent mode the actions the agent reported) and any error. The
+log is in the service, so you can read it without a chat:
 
 - The Activity section of the Mail tab lists the entries with filters, shows
   the details of each, and has a "Process again" button that queues the mail
@@ -230,19 +281,12 @@ The log never holds the mail text. It keeps `triage_retention_days` days (30
 by default), and an entry stays readable after its mail leaves the sync
 window, but "Process again" needs the mail to be in the index.
 
-### Task command
+### Upgrading from `all` mode and the task command
 
-`notify.task_command` is an optional command that creates a task when the
-triage finds assigned work. The notifier runs it with a JSON object on stdin:
-
-```json
-{"title": "...", "due": "YYYY-MM-DD or null", "list": null, "notes": null,
- "mail_id": "...", "message_id": "...", "subject": "...", "sender": "...", "account": "..."}
-```
-
-A zero exit status means success. The first line of the output goes into the
-notification. With a non-zero exit status, the last line of stderr goes into a
-`Mail problem:` line.
+`notify.mode = "all"` and `notify.task_command` were removed. The service
+refuses `all` with a message that says what to use. Use `triage` with a policy
+that notifies for everything, or `agent`. A leftover `task_command` is ignored
+with a warning; in `agent` mode, the agent creates tasks with its own tools.
 
 ## Development
 

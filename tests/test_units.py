@@ -168,6 +168,24 @@ class ConfigTest(unittest.TestCase):
         overridden = config.parse(self.base(archive_folder="Old Mail")).accounts["uni"]
         self.assertEqual(overridden.archive_folder, "Old Mail")
 
+    def test_notify_modes(self):
+        for mode in ("triage", "agent"):
+            notify = config.parse(self.base(notify={"mode": mode, "target": "discord:1"})).accounts["uni"].notify
+            self.assertEqual(notify.mode, mode)
+            self.assertNotIn("task_command", notify.to_dict())
+        with self.assertRaisesRegex(config.ConfigError, "'all' was removed"):
+            config.parse(self.base(notify={"mode": "all", "target": "discord:1"}))
+        with self.assertRaisesRegex(config.ConfigError, "notify.target"):
+            config.parse(self.base(notify={"mode": "agent"}))
+        with self.assertRaisesRegex(config.ConfigError, "notify.mode must be one of"):
+            config.parse(self.base(notify={"mode": "loud"}))
+
+    def test_a_task_command_is_ignored_with_a_warning(self):
+        with self.assertLogs("hermes_mail", "WARNING") as logs:
+            notify = config.parse(self.base(notify={"mode": "triage", "target": "d:1", "task_command": ["/bin/task"]})).accounts["uni"].notify
+        self.assertIn("task_command was removed", logs.output[0])
+        self.assertEqual(notify.mode, "triage")
+
     def test_triage_retention(self):
         self.assertEqual(config.parse(self.base()).triage_retention_days, 30)
         self.assertEqual(config.parse({**self.base(), "triage_retention_days": 0}).triage_retention_days, 0)

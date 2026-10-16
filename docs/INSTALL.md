@@ -48,7 +48,7 @@ sudo cp deploy/config.example.json /etc/hermes-mail/config.json
 Then edit `/etc/hermes-mail/config.json`:
 
 - Set the accounts. One account per entry of `accounts`.
-- For a `triage` or `all` notify mode, set `notify.target`.
+- For a `triage` or `agent` notify mode, set `notify.target`.
 - Put the triage policy of each account in its own file, for example
   `/etc/hermes-mail/university-policy.md`, and set `notify.policy_file`.
 - Put the password of a password account in its own file, for example
